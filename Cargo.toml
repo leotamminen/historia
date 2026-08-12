@@ -16,6 +16,9 @@ readme = "README.md"
 # command; CLAUDE.md §8). Also gives non-interactive-friendly --version/--help handling
 # and clean exit codes for free (§6). Pinned to the 4.x line, the current stable series.
 clap = "4"
+# sha2: content hashing (CLAUDE.md §7). Blobs are content-addressed by SHA-256, and
+# streamed in fixed-size chunks (never read whole into memory - Rule 11).
+sha2 = "0.10"
 
 [dev-dependencies]
 # assert_cmd/predicates: drive the compiled binary as a subprocess and assert on its
