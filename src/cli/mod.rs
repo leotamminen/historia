@@ -92,8 +92,14 @@ pub fn dispatch(argv: &[String]) -> Result<(), String> {
                     Ok(())
                 }
             },
-            Some((name, _)) => match find(name) {
-                Some(cmd) => (cmd.run)(&[]),
+            Some((name, sub)) => match find(name) {
+                Some(cmd) => {
+                    let args: Vec<String> = sub
+                        .get_many::<String>("args")
+                        .map(|vals| vals.cloned().collect())
+                        .unwrap_or_default();
+                    (cmd.run)(&args)
+                }
                 None => unreachable!("clap only matches names present in COMMANDS"),
             },
             None => {

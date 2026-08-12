@@ -22,6 +22,9 @@ clap = "4"
 # stdout/exit code, for the CP0 smoke test (tests/smoke.rs). Dev-only, never shipped.
 assert_cmd = "2"
 predicates = "3"
+# tempfile: isolated scratch directories for init/store tests (CP1), so tests never
+# touch the real filesystem outside a temp dir. Dev-only, never shipped.
+tempfile = "3"
 
 [profile.release]
 # opt-level 3 (speed) over "z" (size): historia's release-critical work is streaming

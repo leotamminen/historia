@@ -20,7 +20,17 @@ pub fn build() -> Command {
         app = app.subcommand(
             Command::new(spec.name)
                 .visible_aliases(spec.aliases)
-                .about(spec.about),
+                .about(spec.about)
+                // Positional passthrough: each command's own `run` (see
+                // `cli::COMMANDS`) parses these for itself - e.g. `init [dir]`.
+                // Kept generic here so adding a command's own arguments later
+                // never means touching this shared parser (CLAUDE.md §8).
+                .arg(
+                    Arg::new("args")
+                        .action(ArgAction::Append)
+                        .num_args(0..)
+                        .value_name("ARGS"),
+                ),
         );
     }
 
