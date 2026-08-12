@@ -1,0 +1,6 @@
+# Scoped to the Windows MSVC target only: statically link the CRT so the release
+# .exe has no external DLL dependency (install = copy one file, per CLAUDE.md CP10).
+# Must NOT affect other targets/hosts (e.g. this repo's Linux dev builds) - hence the
+# [target.<triple>] scoping instead of a blanket [build] rustflags.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

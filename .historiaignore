@@ -1,0 +1,7 @@
+# Dev-time dogfooding only: historia ignoring its own build artifacts when it is
+# used (via `cargo install --path .` + `historia commit`) to back up its own repo.
+#
+# .historia/ itself and the default ignores (.git, node_modules, target, dist,
+# build) are applied by the tool unconditionally (CLAUDE.md §5) - they do not need
+# to be listed here.
+/target
