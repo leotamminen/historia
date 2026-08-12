@@ -1,0 +1,23 @@
+# Rust build artifacts
+/target/
+
+# Backtrace / debug output
+*.pdb
+
+# Cargo lock: KEEP it for a binary crate (historia is a binary, not a library),
+# so builds are reproducible. It is intentionally NOT ignored here.
+
+# Editor / IDE
+/.vscode/
+/.idea/
+*.swp
+*.swo
+*~
+
+# OS cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# historia's own store, in case you dogfood it inside this repo
+/.historia/
