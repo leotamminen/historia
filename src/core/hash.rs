@@ -54,12 +54,9 @@ impl StreamHasher {
 
 /// Stream `reader` in fixed-size chunks and return its SHA-256 digest as a
 /// lowercase hex string. Memory use is O(chunk size), not O(input size) (Rule 11).
-///
-/// Not called outside tests yet - `commit` hashes via `store::write_blob`, which
-/// hashes and writes in the same pass instead of hashing alone. `status` (CP5) and
-/// `verify` (CP8), which need a hash without writing a blob, are the first real
-/// callers.
-#[allow(dead_code)]
+/// `commit` hashes via `store::write_blob` instead (hash-and-write in one pass);
+/// `status` (CP5) needs a hash without writing a blob, so it calls this directly
+/// via `hash_file`.
 pub fn hash_reader<R: Read>(reader: &mut R) -> io::Result<String> {
     let mut hasher = StreamHasher::new();
     for_each_chunk(reader, |chunk| {
@@ -70,8 +67,7 @@ pub fn hash_reader<R: Read>(reader: &mut R) -> io::Result<String> {
 }
 
 /// Stream the file at `path` and return its SHA-256 digest as a lowercase hex
-/// string. See [`hash_reader`] for why this isn't called outside tests yet.
-#[allow(dead_code)]
+/// string.
 pub fn hash_file(path: &Path) -> io::Result<String> {
     hash_reader(&mut File::open(path)?)
 }

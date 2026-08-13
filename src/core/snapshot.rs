@@ -77,17 +77,66 @@ pub fn list_manifests(store_dir: &Path) -> io::Result<Vec<Manifest>> {
     Ok(manifests)
 }
 
-/// True if two entry sets are identical - same paths, hashes, and modes,
-/// regardless of order. The shared "does the working set match HEAD?" primitive
-/// (CLAUDE.md §5): `commit`'s skip-if-unchanged compares a freshly walked+hashed
-/// entry set against `HEAD`'s (or `&[]` when there is no `HEAD` snapshot yet);
-/// CP5's `status` reuses this same function rather than a second comparison.
+/// Paths added, modified, or deleted between a working entry set and a snapshot's
+/// entry set (CP5 `status`'s detailed report). Each list is sorted by path.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct EntryDiff {
+    /// In `working` but not in the snapshot.
+    pub added: Vec<String>,
+    /// In both, but the content hash differs.
+    pub modified: Vec<String>,
+    /// In the snapshot but not in `working`.
+    pub deleted: Vec<String>,
+}
+
+impl EntryDiff {
+    pub fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.modified.is_empty() && self.deleted.is_empty()
+    }
+}
+
+/// Compare a working entry set against a snapshot's entry set (or `&[]` when
+/// there is no `HEAD` snapshot yet) by path, then by content hash - never by
+/// mode, which is best-effort and platform-dependent (Rule 7) and so is never a
+/// meaningful "this file changed" signal on its own.
+///
+/// The single shared primitive behind two views of the same question: `status`
+/// (CP5) wants the detailed added/modified/deleted breakdown; `commit`'s
+/// skip-if-unchanged (§5, via [`entries_match`]) only wants a yes/no. Both read
+/// this one function rather than comparing entry sets two different ways.
+pub fn diff_entries(working: &[Entry], snapshot_entries: &[Entry]) -> EntryDiff {
+    use std::collections::BTreeMap;
+
+    // BTreeMap keys iterate in sorted order, so `added`/`modified`/`deleted`
+    // come out path-sorted for free.
+    let working_map: BTreeMap<&str, &str> =
+        working.iter().map(|e| (e.path.as_str(), e.hash.as_str())).collect();
+    let snapshot_map: BTreeMap<&str, &str> =
+        snapshot_entries.iter().map(|e| (e.path.as_str(), e.hash.as_str())).collect();
+
+    let mut diff = EntryDiff::default();
+    for (path, hash) in &working_map {
+        match snapshot_map.get(path) {
+            None => diff.added.push((*path).to_string()),
+            Some(snapshot_hash) if snapshot_hash != hash => diff.modified.push((*path).to_string()),
+            Some(_) => {}
+        }
+    }
+    for path in snapshot_map.keys() {
+        if !working_map.contains_key(path) {
+            diff.deleted.push((*path).to_string());
+        }
+    }
+    diff
+}
+
+/// True if two entry sets are equivalent by path + content hash (mode-only
+/// differences don't count - see [`diff_entries`]). The boolean form of the
+/// "does the working set match HEAD?" question (CLAUDE.md §5): `commit`'s
+/// skip-if-unchanged uses this; `status` uses [`diff_entries`] directly for the
+/// detailed breakdown. Both share this one comparison, never a second way.
 pub fn entries_match(a: &[Entry], b: &[Entry]) -> bool {
-    let mut a: Vec<&Entry> = a.iter().collect();
-    let mut b: Vec<&Entry> = b.iter().collect();
-    a.sort_by(|x, y| x.path.cmp(&y.path));
-    b.sort_by(|x, y| x.path.cmp(&y.path));
-    a == b
+    diff_entries(a, b).is_empty()
 }
 
 #[cfg(test)]
@@ -192,6 +241,63 @@ mod tests {
 
     // ---- shared "does the working set match HEAD?" comparison (§5) ----
     // Used by commit's skip-if-unchanged and reused by CP5's `status`.
+
+    #[test]
+    fn diff_entries_finds_added_modified_and_deleted_together() {
+        let working = vec![
+            Entry { path: "kept.txt".into(), hash: "same".into(), mode: 0o644 },
+            Entry { path: "changed.txt".into(), hash: "new-hash".into(), mode: 0o644 },
+            Entry { path: "new.txt".into(), hash: "n".into(), mode: 0o644 },
+        ];
+        let head = vec![
+            Entry { path: "kept.txt".into(), hash: "same".into(), mode: 0o644 },
+            Entry { path: "changed.txt".into(), hash: "old-hash".into(), mode: 0o644 },
+            Entry { path: "gone.txt".into(), hash: "g".into(), mode: 0o644 },
+        ];
+
+        let diff = diff_entries(&working, &head);
+
+        assert_eq!(diff.added, vec!["new.txt".to_string()]);
+        assert_eq!(diff.modified, vec!["changed.txt".to_string()]);
+        assert_eq!(diff.deleted, vec!["gone.txt".to_string()]);
+    }
+
+    #[test]
+    fn diff_entries_paths_are_sorted_within_each_group() {
+        let working = vec![
+            Entry { path: "z_new.txt".into(), hash: "1".into(), mode: 0o644 },
+            Entry { path: "a_new.txt".into(), hash: "2".into(), mode: 0o644 },
+        ];
+
+        let diff = diff_entries(&working, &[]);
+
+        assert_eq!(diff.added, vec!["a_new.txt".to_string(), "z_new.txt".to_string()]);
+    }
+
+    #[test]
+    fn diff_entries_ignores_mode_only_differences() {
+        let working = vec![Entry { path: "a".into(), hash: "1".into(), mode: 0o755 }];
+        let head = vec![Entry { path: "a".into(), hash: "1".into(), mode: 0o644 }];
+
+        let diff = diff_entries(&working, &head);
+
+        assert!(diff.is_empty(), "a mode-only difference must not be reported as a change");
+    }
+
+    #[test]
+    fn diff_entries_is_empty_when_nothing_changed() {
+        let entries = vec![Entry { path: "a".into(), hash: "1".into(), mode: 0o644 }];
+
+        assert!(diff_entries(&entries, &entries).is_empty());
+    }
+
+    #[test]
+    fn entries_match_is_defined_in_terms_of_diff_entries() {
+        let a = vec![Entry { path: "a".into(), hash: "1".into(), mode: 0o644 }];
+        let b = vec![Entry { path: "a".into(), hash: "2".into(), mode: 0o644 }];
+
+        assert_eq!(entries_match(&a, &b), diff_entries(&a, &b).is_empty());
+    }
 
     #[test]
     fn entries_match_ignores_order() {
