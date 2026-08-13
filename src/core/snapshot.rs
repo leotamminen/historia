@@ -63,6 +63,20 @@ pub fn read_head_manifest(store_dir: &Path) -> io::Result<Option<Manifest>> {
     }
 }
 
+/// Read every snapshot's manifest, oldest first (snapshot `1..=HEAD`). There is
+/// no deletion yet (§11: `prune`/GC is deferred), so this sequential range is
+/// exactly the full history; an empty store (`HEAD == 0`) yields an empty `Vec`.
+/// The shared read path for `log` (CP4) - reuses `read_manifest`, never a second
+/// way of parsing a manifest.
+pub fn list_manifests(store_dir: &Path) -> io::Result<Vec<Manifest>> {
+    let head = read_head(store_dir)?;
+    let mut manifests = Vec::with_capacity(head as usize);
+    for number in 1..=head {
+        manifests.push(read_manifest(store_dir, number)?);
+    }
+    Ok(manifests)
+}
+
 /// True if two entry sets are identical - same paths, hashes, and modes,
 /// regardless of order. The shared "does the working set match HEAD?" primitive
 /// (CLAUDE.md §5): `commit`'s skip-if-unchanged compares a freshly walked+hashed
@@ -149,6 +163,31 @@ mod tests {
         write_head(&store_dir, 1).unwrap();
 
         assert_eq!(read_head_manifest(&store_dir).unwrap(), Some(manifest));
+    }
+
+    // ---- list_manifests (CP4 `log`) ----
+
+    #[test]
+    fn list_manifests_is_empty_for_a_fresh_store() {
+        let dir = tempdir().unwrap();
+        let store_dir = init_store(dir.path()).unwrap();
+
+        assert_eq!(list_manifests(&store_dir).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn list_manifests_returns_every_snapshot_oldest_first() {
+        let dir = tempdir().unwrap();
+        let store_dir = init_store(dir.path()).unwrap();
+        let m1 = sample_manifest(1, 0);
+        let m2 = sample_manifest(2, 1);
+        let m3 = sample_manifest(3, 2);
+        write_manifest(&store_dir, &m1).unwrap();
+        write_manifest(&store_dir, &m2).unwrap();
+        write_manifest(&store_dir, &m3).unwrap();
+        write_head(&store_dir, 3).unwrap();
+
+        assert_eq!(list_manifests(&store_dir).unwrap(), vec![m1, m2, m3]);
     }
 
     // ---- shared "does the working set match HEAD?" comparison (§5) ----
