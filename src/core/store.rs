@@ -91,21 +91,14 @@ fn build_staging_store(staging_dir: &Path) -> Result<(), InitError> {
 }
 
 // ---- content-addressed blob store ----
-//
-// New in CP2, not wired into any command yet (`commit` lands in CP3), so a plain
-// `cargo build` sees no caller and flags it as dead code. Verified by the unit
-// tests below instead; each `#[allow(dead_code)]` below is temporary and should
-// come off once CP3's `commit` calls into this.
 
 /// Monotonic counter mixed into temp-blob file names, so concurrent `write_blob`
 /// calls within one process never collide (a bare PID is not unique per-call).
-#[allow(dead_code)]
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// The final on-disk path for a blob, sharded by hash prefix: `objects/ab/cdef...`
 /// (CLAUDE.md §9). `hash` is always a 64-char SHA-256 hex digest in practice, but
 /// this stays safe even given a shorter string.
-#[allow(dead_code)]
 fn blob_path(store_dir: &Path, hash: &str) -> PathBuf {
     let split = 2.min(hash.len());
     let (prefix, rest) = hash.split_at(split);
@@ -113,6 +106,9 @@ fn blob_path(store_dir: &Path, hash: &str) -> PathBuf {
 }
 
 /// True if a blob with this hash is already stored.
+///
+/// Not called yet - `commit` doesn't need it (`write_blob` already dedups
+/// internally); `verify` (CP8) is the first real caller.
 #[allow(dead_code)]
 pub fn has_blob(store_dir: &Path, hash: &str) -> bool {
     blob_path(store_dir, hash).is_file()
@@ -125,7 +121,6 @@ pub fn has_blob(store_dir: &Path, hash: &str) -> bool {
 /// rename (Rule 5). A no-op beyond hashing if the blob already exists - content
 /// addressing gives deduplication for free (CLAUDE.md §9). Streams in fixed-size
 /// chunks throughout, never holding the whole input in memory (Rule 11).
-#[allow(dead_code)]
 pub fn write_blob<R: Read>(store_dir: &Path, reader: &mut R) -> io::Result<String> {
     let objects_dir = store_dir.join("objects");
     let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -163,20 +158,18 @@ pub fn write_blob<R: Read>(store_dir: &Path, reader: &mut R) -> io::Result<Strin
 }
 
 /// Open a streaming reader onto the blob with the given hash.
+///
+/// Not called yet - `restore` (CP6) and `verify` (CP8) are the first real callers.
 #[allow(dead_code)]
 pub fn open_blob(store_dir: &Path, hash: &str) -> io::Result<fs::File> {
     fs::File::open(blob_path(store_dir, hash))
 }
 
 // ---- store discovery ----
-//
-// New in CP2; not called from any command yet (every command will use this
-// starting CP3) - same temporary-dead-code situation as the blob store above.
 
 /// Walk up from `start` looking for a `.historia/` directory, the way git finds
 /// `.git/` from any subfolder - so every command can be run from a subdirectory of
 /// the tracked folder, not just its root (CLAUDE.md §5).
-#[allow(dead_code)]
 pub fn locate_store(start: &Path) -> Option<PathBuf> {
     let mut dir = start.canonicalize().ok()?;
     loop {
@@ -198,10 +191,6 @@ pub fn locate_store(start: &Path) -> Option<PathBuf> {
 /// or automatically on drop (including an early `?` return), so a command can never
 /// forget to unlock the store.
 pub mod lock {
-    // New in CP2; `commit`/`restore` start calling this in CP3/CP6, so a plain
-    // `cargo build` currently sees no caller for any item in this module.
-    #![allow(dead_code)]
-
     use std::fmt;
     use std::fs;
     use std::io;
@@ -230,16 +219,27 @@ pub mod lock {
     impl fmt::Display for LockError {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             match self {
-                LockError::Held { pid, .. } => write!(
+                LockError::Held { pid, since } => write!(
                     f,
-                    "store is locked (held by process {pid}); try again once it finishes"
+                    "store is locked (held by process {pid}, {}); try again once it finishes",
+                    age_description(*since)
                 ),
-                LockError::Stale { pid, .. } => write!(
+                LockError::Stale { pid, since } => write!(
                     f,
-                    "found a stale lock (process {pid} looks long gone); remove .historia/{LOCK_FILE_NAME} manually if you're sure no historia process is running"
+                    "found a stale lock (process {pid} looks long gone, {}); remove .historia/{LOCK_FILE_NAME} manually if you're sure no historia process is running",
+                    age_description(*since)
                 ),
                 LockError::Io(e) => write!(f, "{e}"),
             }
+        }
+    }
+
+    /// A short human-readable description of how long ago `since` was, for lock
+    /// error messages (e.g. "locked 3s ago").
+    fn age_description(since: SystemTime) -> String {
+        match SystemTime::now().duration_since(since) {
+            Ok(age) => format!("locked {}s ago", age.as_secs()),
+            Err(_) => "locked just now".to_string(),
         }
     }
 

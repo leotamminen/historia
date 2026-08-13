@@ -19,6 +19,14 @@ clap = "4"
 # sha2: content hashing (CLAUDE.md §7). Blobs are content-addressed by SHA-256, and
 # streamed in fixed-size chunks (never read whole into memory - Rule 11).
 sha2 = "0.10"
+# serde/serde_json: manifest read/write as JSON (CLAUDE.md §7) - human-readable and
+# recoverable by hand even without this binary. No chrono/time crate added: the
+# manifest's ISO-8601 UTC timestamp is produced by a small hand-rolled civil-calendar
+# conversion in format/manifest.rs (Howard Hinnant's public-domain days<->date
+# algorithm) built on std::time alone, since UTC-only formatting doesn't need a full
+# timezone-aware date library (Rule 9: minimal dependencies).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [dev-dependencies]
 # assert_cmd/predicates: drive the compiled binary as a subprocess and assert on its

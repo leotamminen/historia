@@ -29,6 +29,7 @@ pub fn build() -> Command {
                     Arg::new("args")
                         .action(ArgAction::Append)
                         .num_args(0..)
+                        .allow_hyphen_values(true)
                         .value_name("ARGS"),
                 ),
         );
