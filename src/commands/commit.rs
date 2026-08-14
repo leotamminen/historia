@@ -52,10 +52,17 @@ pub fn run(args: &[String]) -> Result<(), String> {
         .release()
         .map_err(|e| format!("historia commit: failed to release lock: {e}"))?;
 
-    result
+    result.map(|_number| ())
 }
 
-fn do_commit(store_dir: &Path, message: &str, allow_empty: bool) -> Result<(), String> {
+/// Do the actual commit work (walk, hash, write blobs, write manifest, advance
+/// HEAD - or skip if unchanged), without acquiring the lock itself. Returns the
+/// snapshot number the store ends up at (the newly created one, or the current
+/// `HEAD` if skip-if-unchanged fired). `pub(super)` so `restore` (CP6) can reuse
+/// this exact path for its mandatory pre-restore safety snapshot (Rule 3, forced
+/// via `allow_empty: true` so it is never skipped) without re-acquiring the lock
+/// `restore` already holds for the whole operation.
+pub(super) fn do_commit(store_dir: &Path, message: &str, allow_empty: bool) -> Result<u64, String> {
     // The tracked folder is `.historia`'s parent, not necessarily the current
     // directory - commit always captures the whole folder, wherever it's run
     // from within it (CLAUDE.md §5).
@@ -84,7 +91,7 @@ fn do_commit(store_dir: &Path, message: &str, allow_empty: bool) -> Result<(), S
 
     if !allow_empty && snapshot::entries_match(&entries, head_entries) {
         println!("nothing to snapshot, working folder matches snapshot {head}");
-        return Ok(());
+        return Ok(head);
     }
 
     let number = head + 1;
@@ -102,7 +109,7 @@ fn do_commit(store_dir: &Path, message: &str, allow_empty: bool) -> Result<(), S
     snapshot::write_head(store_dir, number).map_err(|e| format!("historia commit: {e}"))?;
 
     println!("snapshot {number}: {file_count} file(s) - {message}");
-    Ok(())
+    Ok(number)
 }
 
 fn open_for_hashing(path: &Path) -> Result<std::fs::File, String> {
