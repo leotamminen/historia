@@ -6,7 +6,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::core::ignore;
+use crate::core::ignore::Ignore;
 
 /// One tracked regular file discovered by [`walk`]: its path relative to the
 /// walked root (forward-slash normalized, so manifests are portable across OSes -
@@ -28,34 +28,35 @@ pub struct WalkResult {
     pub skipped_symlinks: Vec<PathBuf>,
 }
 
-/// Walk `root`, applying the hardcoded default ignores (`core::ignore`) and
-/// always skipping the store directory, wherever either appears in the tree.
+/// Walk `root`, applying the default ignores layered with `.historiaignore`
+/// (`core::ignore::Ignore`, CLAUDE.md §5, §7) and always skipping the store
+/// directory, wherever either appears in the tree. The single walker `commit`,
+/// `status`, and `restore` all share, so `.historiaignore` support (CP7) applies
+/// to all three automatically - no command re-implements ignoring itself.
 pub fn walk(root: &Path) -> io::Result<WalkResult> {
+    let ignore = Ignore::load(root);
     let mut result = WalkResult::default();
-    walk_dir(root, root, &mut result)?;
+    walk_dir(root, root, &ignore, &mut result)?;
     result.files.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
     Ok(result)
 }
 
-fn walk_dir(root: &Path, dir: &Path, result: &mut WalkResult) -> io::Result<()> {
+fn walk_dir(root: &Path, dir: &Path, ignore: &Ignore, result: &mut WalkResult) -> io::Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        let relative_path = relative_forward_slash(root, &path)?;
 
-        if ignore::is_ignored_name(&name) {
+        if ignore.is_ignored(&relative_path, file_type.is_dir()) {
             continue;
         }
-
-        let file_type = entry.file_type()?;
-        let path = entry.path();
 
         if file_type.is_symlink() {
             result.skipped_symlinks.push(path);
         } else if file_type.is_dir() {
-            walk_dir(root, &path, result)?;
+            walk_dir(root, &path, ignore, result)?;
         } else if file_type.is_file() {
-            let relative_path = relative_forward_slash(root, &path)?;
             let mode = mode_for(&entry.metadata()?);
             result.files.push(WalkedFile { relative_path, absolute_path: path, mode });
         }
