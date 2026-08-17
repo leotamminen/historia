@@ -77,6 +77,29 @@ pub fn list_manifests(store_dir: &Path) -> io::Result<Vec<Manifest>> {
     Ok(manifests)
 }
 
+/// List every snapshot number that actually has a manifest file on disk under
+/// `snapshots/`, sorted ascending - discovered independently of `HEAD`, unlike
+/// [`list_manifests`] (which trusts `HEAD` and assumes a gapless `1..=HEAD`
+/// run). `verify` (CP8) uses this to check what is really there, since `HEAD`
+/// itself might be the very thing that's corrupted. Anything under
+/// `snapshots/` that isn't named `<number>.json` is silently skipped.
+pub fn list_snapshot_numbers(store_dir: &Path) -> io::Result<Vec<u64>> {
+    let mut numbers = Vec::new();
+    for entry in fs::read_dir(store_dir.join("snapshots"))? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if let Some(number) = name.strip_suffix(".json").and_then(|stem| stem.parse::<u64>().ok()) {
+            numbers.push(number);
+        }
+    }
+    numbers.sort_unstable();
+    Ok(numbers)
+}
+
 /// Paths added, modified, or deleted between a working entry set and a snapshot's
 /// entry set (CP5 `status`'s detailed report). Each list is sorted by path.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -237,6 +260,40 @@ mod tests {
         write_head(&store_dir, 3).unwrap();
 
         assert_eq!(list_manifests(&store_dir).unwrap(), vec![m1, m2, m3]);
+    }
+
+    // ---- list_snapshot_numbers (CP8 `verify`) ----
+
+    #[test]
+    fn list_snapshot_numbers_is_empty_for_a_fresh_store() {
+        let dir = tempdir().unwrap();
+        let store_dir = init_store(dir.path()).unwrap();
+
+        assert_eq!(list_snapshot_numbers(&store_dir).unwrap(), Vec::<u64>::new());
+    }
+
+    #[test]
+    fn list_snapshot_numbers_finds_every_manifest_file_sorted() {
+        let dir = tempdir().unwrap();
+        let store_dir = init_store(dir.path()).unwrap();
+        write_manifest(&store_dir, &sample_manifest(3, 2)).unwrap();
+        write_manifest(&store_dir, &sample_manifest(1, 0)).unwrap();
+        write_manifest(&store_dir, &sample_manifest(2, 1)).unwrap();
+        // No write_head call: discovery must not depend on HEAD at all - that's
+        // the whole point (HEAD might be the thing that's corrupted).
+
+        assert_eq!(list_snapshot_numbers(&store_dir).unwrap(), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn list_snapshot_numbers_ignores_files_that_are_not_numbered_manifests() {
+        let dir = tempdir().unwrap();
+        let store_dir = init_store(dir.path()).unwrap();
+        write_manifest(&store_dir, &sample_manifest(1, 0)).unwrap();
+        fs::write(store_dir.join("snapshots").join("not-a-number.json"), b"{}").unwrap();
+        fs::write(store_dir.join("snapshots").join("README.md"), b"notes").unwrap();
+
+        assert_eq!(list_snapshot_numbers(&store_dir).unwrap(), vec![1]);
     }
 
     // ---- shared "does the working set match HEAD?" comparison (§5) ----

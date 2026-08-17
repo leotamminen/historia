@@ -158,11 +158,35 @@ pub fn write_blob<R: Read>(store_dir: &Path, reader: &mut R) -> io::Result<Strin
 }
 
 /// Open a streaming reader onto the blob with the given hash.
-///
-/// Not called yet - `restore` (CP6) and `verify` (CP8) are the first real callers.
-#[allow(dead_code)]
 pub fn open_blob(store_dir: &Path, hash: &str) -> io::Result<fs::File> {
     fs::File::open(blob_path(store_dir, hash))
+}
+
+/// List every blob currently stored, as `(hash, absolute path)` pairs, derived
+/// from each blob's location under `objects/<prefix>/<rest>` - its filename IS
+/// its claimed hash (CLAUDE.md §9). Does not verify content matches the name;
+/// `verify` (CP8) re-hashes each one separately to confirm that. Silently skips
+/// anything directly under `objects/` that isn't a two-char shard directory
+/// (e.g. a leftover `.tmp-*` file from an interrupted `write_blob` - Rule 5's
+/// "the worst case is orphan blobs, harmless").
+pub fn list_blobs(store_dir: &Path) -> io::Result<Vec<(String, PathBuf)>> {
+    let mut blobs = Vec::new();
+    for shard_entry in fs::read_dir(store_dir.join("objects"))? {
+        let shard_entry = shard_entry?;
+        if !shard_entry.file_type()?.is_dir() {
+            continue;
+        }
+        let prefix = shard_entry.file_name().to_string_lossy().into_owned();
+        for blob_entry in fs::read_dir(shard_entry.path())? {
+            let blob_entry = blob_entry?;
+            if !blob_entry.file_type()?.is_file() {
+                continue;
+            }
+            let rest = blob_entry.file_name().to_string_lossy().into_owned();
+            blobs.push((format!("{prefix}{rest}"), blob_entry.path()));
+        }
+    }
+    Ok(blobs)
 }
 
 // ---- store discovery ----
@@ -453,6 +477,47 @@ mod tests {
         let mut buf = Vec::new();
         open_blob(&store_dir, &hash).unwrap().read_to_end(&mut buf).unwrap();
         assert_eq!(buf.len(), total);
+    }
+
+    #[test]
+    fn list_blobs_is_empty_for_a_fresh_store() {
+        let dir = tempdir().unwrap();
+        let store_dir = init_store(dir.path()).unwrap();
+
+        assert_eq!(list_blobs(&store_dir).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn list_blobs_returns_every_stored_blobs_hash_and_path() {
+        let dir = tempdir().unwrap();
+        let store_dir = init_store(dir.path()).unwrap();
+        let hash_a = write_blob(&store_dir, &mut &b"aaa"[..]).unwrap();
+        let hash_b = write_blob(&store_dir, &mut &b"bbb"[..]).unwrap();
+
+        let mut blobs = list_blobs(&store_dir).unwrap();
+        blobs.sort();
+        let mut expected = vec![
+            (hash_a.clone(), blob_path(&store_dir, &hash_a)),
+            (hash_b.clone(), blob_path(&store_dir, &hash_b)),
+        ];
+        expected.sort();
+
+        assert_eq!(blobs, expected);
+    }
+
+    #[test]
+    fn list_blobs_ignores_stray_temp_files_directly_under_objects() {
+        let dir = tempdir().unwrap();
+        let store_dir = init_store(dir.path()).unwrap();
+        write_blob(&store_dir, &mut &b"real"[..]).unwrap();
+        // Simulate a leftover temp file from an interrupted write_blob (Rule 5:
+        // "the worst case is orphan blobs (harmless)") - it sits directly under
+        // objects/, not inside a two-char shard directory.
+        fs::write(store_dir.join("objects").join(".tmp-leftover"), b"junk").unwrap();
+
+        let blobs = list_blobs(&store_dir).unwrap();
+
+        assert_eq!(blobs.len(), 1, "the stray temp file must not be listed as a blob");
     }
 
     fn walk_objects(store_dir: &Path) -> Vec<PathBuf> {
