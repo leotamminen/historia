@@ -291,6 +291,10 @@ Deliberately boring and documented, so data survives even if this binary and Rus
   unchanged files across snapshots share one blob.
 - `parent` is the previous snapshot number now; from CP13 it also carries the parent
   manifest's hash to form a tamper-evident chain.
+- `mode` is stored as a DECIMAL integer of the Unix permission bits (e.g. 420 = 0o644).
+  It is best-effort and platform-dependent (Rule 7): on Windows it is a sensible default,
+  not a real POSIX bit. Restore applies it best-effort; round-trip equality is defined on
+  content, not on mode.
 
 **Write order (Rule 5):** blobs → manifest → HEAD, each via write-then-rename. The object
 store is append-only; never mutate a blob in place. Restore writes into the working folder
@@ -309,43 +313,43 @@ author commits and pushes (Rule 1).
 
 ### MVP
 
-- [ ] **CP0 — Scaffolding & dispatch.** Cargo project (edition 2021, MSRV recorded), module
+- [x] **CP0 — Scaffolding & dispatch.** Cargo project (edition 2021, MSRV recorded), module
   skeleton per §8, clap wired, command registry in `cli/mod.rs`, release profile with
   `crt-static`. Generate README.md, LICENSE (MIT), .gitignore, .historiaignore. Working:
   `historia --version` and a `help` stub listing commands.
   *Done when:* both commands run; `cargo build` clean; structure matches §8.
 
-- [ ] **CP1 — `init`.** Create `.historia/` with `objects/`, `snapshots/`, `HEAD`, `format`.
+- [x] **CP1 — `init`.** Create `.historia/` with `objects/`, `snapshots/`, `HEAD`, `format`.
   Support `init [dir]` per §5. Refuse politely if a store already exists.
   *Done when:* store is created correctly from all four init forms.
 
-- [ ] **CP2 — Store, hashing & lock (internal).** `core/hash.rs` (streaming), `core/store.rs`
+- [x] **CP2 — Store, hashing & lock (internal).** `core/hash.rs` (streaming), `core/store.rs`
   (write/read a blob by hash, atomic write-then-rename), and the `.historia/lock` primitive
   (acquire/release, fail-fast, stale detection). Unit-tested, no user command yet.
   *Done when:* unit tests cover write→read round-trip, dedup of identical content, and that a
   second process cannot take a held lock.
 
-- [ ] **CP3 — `commit` / `snapshot`.** Walk the folder (skip symlinks + warn; respect §5
+- [x] **CP3 — `commit` / `snapshot`.** Walk the folder (skip symlinks + warn; respect §5
   default ignores), hash each file, take the lock, write blobs → manifest → HEAD in that
   order, release the lock. Implement skip-if-unchanged (+ `--allow-empty`).
   *Done when:* `commit -m` produces a manifest; every entry has a blob; committing an
   unchanged folder adds no snapshot and exits success; dedup verified programmatically.
 
-- [ ] **CP4 — `log`.** List snapshots: number, timestamp, message (newest first).
+- [x] **CP4 — `log`.** List snapshots: number, timestamp, message (newest first).
   *Done when:* output matches the committed manifests.
 
-- [ ] **CP5 — `status`.** Compare working folder to `HEAD`: added / modified / deleted,
+- [x] **CP5 — `status`.** Compare working folder to `HEAD`: added / modified / deleted,
   respecting ignores. Shares the comparison function with skip-if-unchanged.
   *Done when:* correct across all three change types on a test folder.
 
-- [ ] **CP6 — `restore` (mirror + safety snapshot + lock).** `restore <n>` for the whole
+- [x] **CP6 — `restore` (mirror + safety snapshot + lock).** `restore <n>` for the whole
   folder (exact mirror of the tracked set, Rule 4) and `restore <n> <path>` for one file.
   Take a safety snapshot first (Rule 3); take the lock (Rule 6); never touch ignored paths.
   *Done when:* **round-trip test passes** (Rule 7) — commit, mutate, restore, tracked files
   content-identical to the snapshot; pre-restore state recoverable as a new snapshot; ignored
   paths untouched.
 
-- [ ] **CP7 — `.historiaignore`.** Parse it via the `ignore` crate, layered on the default
+- [x] **CP7 — `.historiaignore`.** Parse it via the `ignore` crate, layered on the default
   ignores. Document precedence.
   *Done when:* patterns include/exclude correctly; defaults still apply; `.historia/` always ignored.
 
@@ -412,6 +416,7 @@ author commits and pushes (Rule 1).
 - Author writes and pushes every commit; Claude Code only suggests the message. (Rule 1)
 - init separate from first commit (git semantics).
 - Metadata = path + content + exec bit (exec bit best-effort, platform-dependent).
+- mode stored as decimal Unix permission bits; best-effort; content-only round-trip equality.
 - Default ignores on; overridable.
 - restore = exact mirror of tracked set; never touches ignored paths; safety snapshot first.
 - commit = skip-if-unchanged by default; `--allow-empty` to force.
