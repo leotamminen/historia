@@ -353,7 +353,7 @@ author commits and pushes (Rule 1).
   ignores. Document precedence.
   *Done when:* patterns include/exclude correctly; defaults still apply; `.historia/` always ignored.
 
-- [ ] **CP8 — `verify`.** Re-hash every blob against its name; validate every manifest
+- [x] **CP8 — `verify`.** Re-hash every blob against its name; validate every manifest
   reference resolves. Report corruption/tampering clearly.
   *Done when:* passes on a good store; detects a deliberately corrupted blob.
 
