@@ -155,10 +155,15 @@ jobs:
 
       # --clobber: safe to re-run a single failed matrix job without first
       # deleting its previous (partial or stale) asset by hand.
+      #
+      # Single line, deliberately: this step has no explicit `shell:`, so it
+      # runs under bash on Linux/macOS but PowerShell on Windows (GitHub
+      # Actions' per-OS default). A trailing `\` line continuation is a
+      # bash-ism that PowerShell doesn't understand, which broke this exact
+      # step on Windows before (CP10 fix). One line has no continuation syntax
+      # to get wrong, so it's correct under either shell without needing to
+      # pin one.
       - name: Upload asset to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release upload "${{ needs.create-release.outputs.tag }}" "${{ env.ASSET }}" \
-            --repo "${{ github.repository }}" \
-            --clobber
+        run: gh release upload "${{ needs.create-release.outputs.tag }}" "${{ env.ASSET }}" --repo "${{ github.repository }}" --clobber
