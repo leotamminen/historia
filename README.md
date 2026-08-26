@@ -22,16 +22,32 @@ historia help [command]          # list commands, or detail one   (aliases: -h, 
 historia --version               # version
 ```
 
-As of this checkpoint (CP0), only `--version` and `help` are implemented; every
-other command reports which checkpoint will implement it. See `CLAUDE.md` for the
-full design and the checkpoint plan.
+See `CLAUDE.md` for the full design and the checkpoint plan.
 
 ## Install
 
-TBD until CP10 (release packaging) - the eventual install will be: download a
-single self-contained binary, put it on PATH.
+Download the archive for your platform from the
+[Releases page](https://github.com/leotamminen/historia/releases), extract it,
+and put the `historia` binary on your `PATH`. Each archive is self-contained -
+no Rust toolchain, no installer, no external DLLs on Windows.
 
-For development:
+| Platform               | Asset                                                |
+|------------------------|-------------------------------------------------------|
+| Windows x64            | `historia-<version>-x86_64-pc-windows-msvc.zip`       |
+| Windows ARM64          | `historia-<version>-aarch64-pc-windows-msvc.zip`      |
+| macOS (Intel)          | `historia-<version>-x86_64-apple-darwin.tar.gz`       |
+| macOS (Apple Silicon)  | `historia-<version>-aarch64-apple-darwin.tar.gz`      |
+| Linux x64              | `historia-<version>-x86_64-unknown-linux-gnu.tar.gz`  |
+| Linux ARM64            | `historia-<version>-aarch64-unknown-linux-gnu.tar.gz` |
+
+**Known limitation:** the Linux builds link glibc dynamically, so they run on
+most modern distributions but need a reasonably current glibc - they will not
+run on very old ones. A fully static `musl` build is planned for a later
+checkpoint but isn't available yet.
+
+### From source
+
+For development, or any platform not listed above:
 
 ```
 cargo install --path .
