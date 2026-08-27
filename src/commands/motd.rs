@@ -13,7 +13,21 @@ use crate::format::manifest;
 /// with the repo), but every caller still treats an empty list as harmless.
 const FACTS: &str = include_str!("../../assets/facts.txt");
 
+/// The "historia" wordmark, shared with `cli::help`'s top-level banner (CP12
+/// art enhancement) - see that module for why this is `include_str!`'d twice
+/// rather than shared via a Rust constant (still exactly one copy of the art).
+const WORDMARK: &str = include_str!("../../assets/wordmark.txt");
+
+/// A small clock-with-back-arrow icon - `motd`'s own visual identity, kept out
+/// of the shared top-level help banner (CP12) to avoid clutter there.
+const CLOCK_ICON: &str = include_str!("../../assets/clock_icon.txt");
+
 pub fn run(_args: &[String]) -> Result<(), String> {
+    print!("{}", CLOCK_ICON.trim_end());
+    println!("\n");
+    print!("{}", WORDMARK.trim_end());
+    println!("\n");
+
     println!("historia {}", env!("CARGO_PKG_VERSION"));
     println!();
     println!("  Time (UTC): {}", manifest::now_iso8601_utc());

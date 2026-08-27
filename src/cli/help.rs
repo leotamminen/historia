@@ -4,9 +4,21 @@
 
 use super::{find, unknown_command_message, CommandSpec, COMMANDS};
 
+/// The "historia" wordmark banner, embedded at compile time (Rule 2/9 - no
+/// runtime file read, no new dependency). Shared with `motd` (CP12 art
+/// enhancement): both `include_str!` the same `assets/wordmark.txt`, so there
+/// is exactly one copy of the art itself even though two modules embed it.
+/// Shown at the top of top-level help only (`historia`, `historia help`) so a
+/// first-time user sees the identity naturally - deliberately left off
+/// per-command help (`print_detail` below) to avoid clutter there.
+const WORDMARK: &str = include_str!("../../assets/wordmark.txt");
+
 /// `historia help` with no argument (also reached via bare `-h`/`--help`,
-/// `man`, `info` - CP9): every MVP command, one line each.
+/// `man`, `info` - CP9): the wordmark banner, then every MVP command, one line
+/// each.
 pub fn print_general() {
+    print!("{}", WORDMARK.trim_end());
+    println!("\n");
     println!(
         "historia {} - minimal, git-style version control for one folder\n",
         env!("CARGO_PKG_VERSION")
