@@ -364,7 +364,7 @@ author commits and pushes (Rule 1).
 
 ### Enhancements (hardest last)
 
-- [ ] **CP10 — Release packaging.** `crt-static` dependency-free Windows `.exe`; document
+- [x] **CP10 — Release packaging.** `crt-static` dependency-free Windows `.exe`; document
   Windows + Linux builds; GitHub Releases artifact. Install = download one file, put on PATH.
   (Author's dev install stays `cargo install --path .`.)
   *Done when:* a fresh machine with no Rust runs the downloaded binary.
@@ -404,6 +404,10 @@ author commits and pushes (Rule 1).
 - Richer metadata (ACLs, ownership) — only if a real use case appears.
 - `diff` between snapshots.
 - Wait-with-timeout lock mode (if manual concurrent use becomes annoying).
+- Update the release workflow's actions/checkout (and any Node-20 actions) to a Node-24
+  version (e.g. @v5) — currently emits a deprecation warning, harmless for now.
+- Fully static Linux binary via a musl target (x86_64/aarch64-unknown-linux-musl) so the
+  download runs on very old glibc too — current linux-gnu build links glibc dynamically.
 
 ---
 
