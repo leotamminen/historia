@@ -52,6 +52,22 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
     write_atomic_with(path, |file| file.write_all(contents))
 }
 
+/// Render an absolute path for a user-facing message. `canonicalize()` prefixes
+/// Windows paths with the verbatim `\\?\` marker; that form is correct but noisy
+/// to read in a CLI message, so strip it for display only - the underlying path
+/// used for actual filesystem operations is unaffected. Shared by every command
+/// that prints an absolute path back to the user (`init`, CP11's `backup`, ...).
+#[cfg(windows)]
+pub fn display_path(path: &Path) -> String {
+    let s = path.display().to_string();
+    s.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(s)
+}
+
+#[cfg(not(windows))]
+pub fn display_path(path: &Path) -> String {
+    path.display().to_string()
+}
+
 /// Restore statistics for a whole-folder [`mirror_restore`]: how many entries
 /// were written, and how many tracked-but-not-in-the-target-snapshot files were
 /// deleted (Rule 4).

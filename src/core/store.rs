@@ -189,6 +189,154 @@ pub fn list_blobs(store_dir: &Path) -> io::Result<Vec<(String, PathBuf)>> {
     Ok(blobs)
 }
 
+// ---- backup (CP11) ----
+
+/// Statistics from a successful [`backup_store`] call.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct BackupStats {
+    pub objects_copied: usize,
+    pub snapshots_copied: usize,
+}
+
+/// Why `backup_store` could not copy the store.
+#[derive(Debug)]
+pub enum BackupError {
+    /// A store already exists at the destination and `force` was not set.
+    DestinationAlreadyExists,
+    Io(io::Error),
+}
+
+impl fmt::Display for BackupError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BackupError::DestinationAlreadyExists => write!(f, "a store already exists at the destination"),
+            BackupError::Io(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for BackupError {}
+
+impl From<io::Error> for BackupError {
+    fn from(e: io::Error) -> Self {
+        BackupError::Io(e)
+    }
+}
+
+/// Copy the whole store at `source_store_dir` to `dest_root/.historia` (CLAUDE.md
+/// CP11): every blob under `objects/`, every manifest under `snapshots/`, `HEAD`,
+/// and `format`. Read-only on the source - never writes to it, never takes its
+/// lock (a backup only needs a consistent read of files `commit`/`restore`
+/// already write atomically; it doesn't mutate anything that needs excluding
+/// other writers). Creates `dest_root` (recursively) if it doesn't exist yet.
+///
+/// Destination semantics: the copy lands at `dest_root/.historia/`, not
+/// `dest_root` itself, so `dest_root` becomes an ordinary tracked-folder root
+/// like any other (with no working files, just history) - `cd dest_root &&
+/// historia verify` works exactly like it does anywhere else.
+///
+/// Refuses (`DestinationAlreadyExists`) if a store already exists at the
+/// destination, unless `force` is set (same data-safety spirit as `init_store`'s
+/// own refusal). Safe against a half-copied destination the same way
+/// `init_store` is: the whole copy is built in a staging directory next to the
+/// destination and only moved into place with one atomic rename at the end. When
+/// `force` overwrites an existing destination, the old copy is removed only
+/// after the new one has fully succeeded, so a failure partway through a forced
+/// backup leaves the previous destination store intact - never neither.
+pub fn backup_store(source_store_dir: &Path, dest_root: &Path, force: bool) -> Result<BackupStats, BackupError> {
+    let dest_store_dir = dest_root.join(STORE_DIR_NAME);
+    if dest_store_dir.exists() && !force {
+        return Err(BackupError::DestinationAlreadyExists);
+    }
+
+    fs::create_dir_all(dest_root)?;
+    let staging_dir = dest_root.join(format!(".{STORE_DIR_NAME}.backup-{}.tmp", std::process::id()));
+    if staging_dir.exists() {
+        fs::remove_dir_all(&staging_dir)?;
+    }
+
+    let stats = match copy_store_tree(source_store_dir, &staging_dir) {
+        Ok(stats) => stats,
+        Err(e) => {
+            let _ = fs::remove_dir_all(&staging_dir);
+            return Err(BackupError::Io(e));
+        }
+    };
+
+    if dest_store_dir.exists() {
+        if !force {
+            // Another process created a store at the destination while we were
+            // copying - back off rather than clobber a store we never agreed
+            // to overwrite (mirrors init_store's own race handling).
+            let _ = fs::remove_dir_all(&staging_dir);
+            return Err(BackupError::DestinationAlreadyExists);
+        }
+        fs::remove_dir_all(&dest_store_dir)?;
+    }
+
+    if let Err(e) = fs::rename(&staging_dir, &dest_store_dir) {
+        let _ = fs::remove_dir_all(&staging_dir);
+        return Err(BackupError::Io(e));
+    }
+
+    Ok(stats)
+}
+
+/// Copy `source_store_dir`'s whole contents into a fresh `staging_dir`.
+fn copy_store_tree(source_store_dir: &Path, staging_dir: &Path) -> io::Result<BackupStats> {
+    fs::create_dir_all(staging_dir)?;
+    stream_copy_file(&source_store_dir.join("format"), &staging_dir.join("format"))?;
+    stream_copy_file(&source_store_dir.join("HEAD"), &staging_dir.join("HEAD"))?;
+    let snapshots_copied = copy_dir_flat(&source_store_dir.join("snapshots"), &staging_dir.join("snapshots"))?;
+    let objects_copied = copy_objects(source_store_dir, staging_dir)?;
+    Ok(BackupStats { objects_copied, snapshots_copied })
+}
+
+/// Copy every blob from `source_store_dir` into `staging_dir/objects/`,
+/// preserving the hash-prefix sharding (CLAUDE.md §9). Reuses [`list_blobs`] -
+/// the same "what's actually stored" discovery `verify` (CP8) uses - rather
+/// than a second way of walking `objects/`.
+fn copy_objects(source_store_dir: &Path, staging_dir: &Path) -> io::Result<usize> {
+    fs::create_dir_all(staging_dir.join("objects"))?;
+    let blobs = list_blobs(source_store_dir)?;
+    for (hash, source_path) in &blobs {
+        let dest_path = blob_path(staging_dir, hash);
+        if let Some(parent) = dest_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        stream_copy_file(source_path, &dest_path)?;
+    }
+    Ok(blobs.len())
+}
+
+/// Copy every file directly under `source_dir` into `dest_dir` (used for
+/// `snapshots/`, which is a flat directory of `<n>.json` manifests - no further
+/// nesting to preserve).
+fn copy_dir_flat(source_dir: &Path, dest_dir: &Path) -> io::Result<usize> {
+    fs::create_dir_all(dest_dir)?;
+    let mut count = 0;
+    for entry in fs::read_dir(source_dir)? {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            stream_copy_file(&entry.path(), &dest_dir.join(entry.file_name()))?;
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+/// Stream `source`'s bytes to a freshly created `dest` (Rule 11 - `io::copy`
+/// between two open files never buffers the whole content in memory). The
+/// staging directory this writes into isn't visible at its final location until
+/// `backup_store`'s single closing rename, so - unlike `write_atomic` - no
+/// per-file temp-then-rename dance is needed here.
+fn stream_copy_file(source: &Path, dest: &Path) -> io::Result<()> {
+    let mut source_file = fs::File::open(source)?;
+    let mut dest_file = fs::File::create(dest)?;
+    io::copy(&mut source_file, &mut dest_file)?;
+    dest_file.sync_all()
+}
+
 // ---- store discovery ----
 
 /// Walk up from `start` looking for a `.historia/` directory, the way git finds
@@ -569,6 +717,149 @@ mod tests {
         fs::create_dir_all(&nested).unwrap();
 
         assert!(locate_store(&nested).is_none());
+    }
+
+    // ---- backup_store (CP11) ----
+
+    use crate::format::manifest::{Entry, Manifest};
+
+    fn sample_manifest(number: u64, entries: Vec<Entry>) -> Manifest {
+        Manifest {
+            number,
+            timestamp: "1970-01-01T00:00:00Z".to_string(),
+            message: "test".to_string(),
+            parent: number.saturating_sub(1),
+            entries,
+        }
+    }
+
+    fn read_store_bytes(store_dir: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+        let mut out = std::collections::BTreeMap::new();
+        collect_bytes(store_dir, store_dir, &mut out);
+        out
+    }
+
+    fn collect_bytes(root: &Path, dir: &Path, out: &mut std::collections::BTreeMap<String, Vec<u8>>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.is_dir() {
+                collect_bytes(root, &path, out);
+            } else if path.is_file() {
+                let rel = path.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
+                out.insert(rel, fs::read(&path).unwrap());
+            }
+        }
+    }
+
+    #[test]
+    fn backup_store_copies_everything_to_dest_dot_historia() {
+        let source_dir = tempdir().unwrap();
+        let source_store = init_store(source_dir.path()).unwrap();
+        let hash = write_blob(&source_store, &mut &b"content"[..]).unwrap();
+        let manifest = sample_manifest(1, vec![Entry { path: "a.txt".into(), hash, mode: 0o644 }]);
+        crate::core::snapshot::write_manifest(&source_store, &manifest).unwrap();
+        crate::core::snapshot::write_head(&source_store, 1).unwrap();
+
+        let dest_dir = tempdir().unwrap();
+        let stats = backup_store(&source_store, dest_dir.path(), false).unwrap();
+
+        assert_eq!(stats.objects_copied, 1);
+        assert_eq!(stats.snapshots_copied, 1);
+        let dest_store = dest_dir.path().join(STORE_DIR_NAME);
+        assert!(dest_store.join("objects").is_dir());
+        assert!(dest_store.join("snapshots").join("1.json").is_file());
+        assert_eq!(fs::read_to_string(dest_store.join("HEAD")).unwrap(), "1\n");
+        assert_eq!(
+            fs::read_to_string(dest_store.join("format")).unwrap(),
+            crate::format::manifest::FORMAT_MARKER
+        );
+    }
+
+    #[test]
+    fn backup_store_creates_the_destination_path_if_missing() {
+        let source_dir = tempdir().unwrap();
+        let source_store = init_store(source_dir.path()).unwrap();
+
+        let outer = tempdir().unwrap();
+        let dest_root = outer.path().join("nested").join("backup-location");
+        assert!(!dest_root.exists());
+
+        backup_store(&source_store, &dest_root, false).unwrap();
+
+        assert!(dest_root.join(STORE_DIR_NAME).is_dir());
+    }
+
+    #[test]
+    fn backup_store_refuses_when_destination_already_has_a_store_without_force() {
+        let source_dir = tempdir().unwrap();
+        let source_store = init_store(source_dir.path()).unwrap();
+
+        let dest_dir = tempdir().unwrap();
+        init_store(dest_dir.path()).unwrap();
+        let head_before = fs::read_to_string(dest_dir.path().join(STORE_DIR_NAME).join("HEAD")).unwrap();
+
+        let err = backup_store(&source_store, dest_dir.path(), false).unwrap_err();
+
+        assert!(matches!(err, BackupError::DestinationAlreadyExists));
+        assert_eq!(
+            fs::read_to_string(dest_dir.path().join(STORE_DIR_NAME).join("HEAD")).unwrap(),
+            head_before
+        );
+    }
+
+    #[test]
+    fn backup_store_with_force_overwrites_an_existing_destination() {
+        let source_dir = tempdir().unwrap();
+        let source_store = init_store(source_dir.path()).unwrap();
+        let manifest = sample_manifest(1, vec![]);
+        crate::core::snapshot::write_manifest(&source_store, &manifest).unwrap();
+        crate::core::snapshot::write_head(&source_store, 1).unwrap();
+
+        let dest_dir = tempdir().unwrap();
+        init_store(dest_dir.path()).unwrap();
+
+        let stats = backup_store(&source_store, dest_dir.path(), true).unwrap();
+
+        assert_eq!(stats.snapshots_copied, 1);
+        assert_eq!(
+            fs::read_to_string(dest_dir.path().join(STORE_DIR_NAME).join("HEAD")).unwrap(),
+            "1\n"
+        );
+    }
+
+    #[test]
+    fn backup_store_never_modifies_the_source() {
+        let source_dir = tempdir().unwrap();
+        let source_store = init_store(source_dir.path()).unwrap();
+        let hash = write_blob(&source_store, &mut &b"x"[..]).unwrap();
+        let manifest = sample_manifest(1, vec![Entry { path: "a.txt".into(), hash, mode: 0o644 }]);
+        crate::core::snapshot::write_manifest(&source_store, &manifest).unwrap();
+        crate::core::snapshot::write_head(&source_store, 1).unwrap();
+
+        let before = read_store_bytes(&source_store);
+
+        let dest_dir = tempdir().unwrap();
+        backup_store(&source_store, dest_dir.path(), false).unwrap();
+
+        assert_eq!(read_store_bytes(&source_store), before);
+    }
+
+    #[test]
+    fn backup_store_copies_a_large_blob_correctly() {
+        let source_dir = tempdir().unwrap();
+        let source_store = init_store(source_dir.path()).unwrap();
+        let content = vec![0x5Au8; crate::core::hash::CHUNK_SIZE * 5 + 123];
+        let hash = write_blob(&source_store, &mut &content[..]).unwrap();
+        let manifest = sample_manifest(1, vec![Entry { path: "big.bin".into(), hash: hash.clone(), mode: 0o644 }]);
+        crate::core::snapshot::write_manifest(&source_store, &manifest).unwrap();
+        crate::core::snapshot::write_head(&source_store, 1).unwrap();
+
+        let dest_dir = tempdir().unwrap();
+        backup_store(&source_store, dest_dir.path(), false).unwrap();
+
+        let copied = fs::read(blob_path(&dest_dir.path().join(STORE_DIR_NAME), &hash)).unwrap();
+        assert_eq!(copied, content);
     }
 
     // ---- lock ----

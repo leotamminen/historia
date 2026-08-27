@@ -3,8 +3,9 @@
 
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
+use crate::core::fsutil::display_path;
 use crate::core::store::{self, InitError};
 
 pub fn run(args: &[String]) -> Result<(), String> {
@@ -21,21 +22,6 @@ pub fn run(args: &[String]) -> Result<(), String> {
         )),
         Err(InitError::Io(e)) => Err(format!("historia init: failed to create store: {e}")),
     }
-}
-
-/// Render an absolute path for a user-facing message. `canonicalize()` prefixes
-/// Windows paths with the verbatim `\\?\` marker; that form is correct but noisy
-/// to read in a CLI message, so strip it for display only - the underlying path
-/// passed to `store::init_store` is unaffected.
-#[cfg(windows)]
-fn display_path(path: &Path) -> String {
-    let s = path.display().to_string();
-    s.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(s)
-}
-
-#[cfg(not(windows))]
-fn display_path(path: &Path) -> String {
-    path.display().to_string()
 }
 
 /// Resolve the four `init` targeting forms from CLAUDE.md §5 to an absolute path,

@@ -77,6 +77,14 @@ pub const COMMANDS: &[CommandSpec] = &[
         usage_detail: "",
         run: commands::verify::run,
     },
+    CommandSpec {
+        name: "backup",
+        aliases: &[],
+        about: "Copy the whole store to another local path",
+        usage: "historia backup <path> [--force]",
+        usage_detail: "  <path>    Destination folder (created if missing); the store lands at\n            <path>/.historia, so <path> becomes a normal tracked-folder root\n  --force   Overwrite a store that already exists at the destination",
+        run: commands::backup::run,
+    },
 ];
 
 /// Find a registered command by its canonical name or an alias.
