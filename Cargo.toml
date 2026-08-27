@@ -31,6 +31,14 @@ serde_json = "1"
 # own matcher, earmarked for exactly this). Pinned to the 0.4 line, the current
 # stable series (also what ripgrep itself depends on).
 ignore = "0.4"
+# hostname: `motd`'s "Host:" line (CLAUDE.md CP12) needs the local machine's
+# hostname, which std has no portable API for. This crate does nothing but wrap
+# the local gethostname()/GetComputerNameExW() syscall per platform - no
+# network, no I/O beyond that one local call (Rule 2 stays satisfied). Picked
+# over rolling our own per-platform FFI because it keeps this codebase at zero
+# unsafe code (Rule 9's minimalism cuts both ways: prefer a tiny, focused,
+# already-audited crate here over hand-written unsafe syscall bindings).
+hostname = "0.4"
 
 [dev-dependencies]
 # assert_cmd/predicates: drive the compiled binary as a subprocess and assert on its

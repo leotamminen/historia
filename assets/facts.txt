@@ -1,0 +1,12 @@
+The word "backup" was originally two words: "back up" - as in, before you do something risky, back up your files first.
+Git was written by Linus Torvalds in about 10 days in 2005, after the Linux kernel project lost access to its previous version control system.
+RCS (Revision Control System), one of the earliest version control tools, dates back to 1982.
+SHA-256 produces a 256-bit hash - 2^256 possible values, far more than the estimated number of atoms in the observable universe.
+The floppy disk "save" icon, still used in countless apps today, hasn't been physically relevant since the early 2000s.
+A single bit flip from cosmic ray radiation can silently corrupt a file - one reason checksums like SHA-256 exist.
+The classic 3-2-1 backup rule: 3 copies of your data, on 2 different kinds of media, with 1 copy stored off-site.
+"Atomic" in computing (as in an atomic write) comes from the Greek "atomos", meaning indivisible.
+"Historia" is Latin for "inquiry" or "narrative" - the shared root of both "history" and "story".
+Content-addressed storage, like historia's objects/ folder, stores identical file contents only once, no matter how many snapshots reference them.
+Deleting a file rarely erases its bytes immediately - most filesystems just remove the reference, which is why "unformat" and file-recovery tools exist.
+The first hard drive, IBM's RAMAC 305 from 1956, weighed over a ton and stored about 5 megabytes.

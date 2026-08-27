@@ -6,6 +6,7 @@ pub mod backup;
 pub mod commit;
 pub mod init;
 pub mod log;
+pub mod motd;
 pub mod restore;
 pub mod status;
 pub mod verify;
