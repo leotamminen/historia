@@ -143,6 +143,11 @@ fn check_objects(store_dir: &Path, report: &mut Report) -> HashSet<String> {
     present
 }
 
+/// Check every discovered manifest: its entries resolve to stored objects
+/// (CP8), and - CP13 - if it carries a `parent_hash`, that it still matches its
+/// parent's actual on-disk bytes. A manifest with no `parent_hash` (pre-chain,
+/// or the very first snapshot ever) is not chain-checked at all - CLAUDE.md
+/// CP13's explicit "chain starts from new snapshots" decision, not an error.
 fn check_manifests(store_dir: &Path, numbers: &[u64], present_hashes: &HashSet<String>, report: &mut Report) {
     for &number in numbers {
         report.snapshots_checked += 1;
@@ -159,6 +164,21 @@ fn check_manifests(store_dir: &Path, numbers: &[u64], present_hashes: &HashSet<S
                     "snapshot {number}: '{}' references missing object {}",
                     entry.path, entry.hash
                 ));
+            }
+        }
+
+        if let Some(expected_parent_hash) = &manifest.parent_hash {
+            match snapshot::hash_manifest_file(store_dir, manifest.parent) {
+                Ok(actual_parent_hash) if &actual_parent_hash == expected_parent_hash => {}
+                Ok(actual_parent_hash) => report.problems.push(format!(
+                    "snapshot {number}: chain broken - recorded parent_hash {expected_parent_hash} \
+                     does not match snapshot {}'s actual hash {actual_parent_hash} (tampered?)",
+                    manifest.parent
+                )),
+                Err(e) => report.problems.push(format!(
+                    "snapshot {number}: chain broken - cannot hash parent snapshot {}: {e}",
+                    manifest.parent
+                )),
             }
         }
     }
@@ -178,6 +198,7 @@ mod tests {
             timestamp: "1970-01-01T00:00:00Z".to_string(),
             message: "test".to_string(),
             parent: number.saturating_sub(1),
+            parent_hash: None,
             entries,
         }
     }
@@ -287,5 +308,91 @@ mod tests {
 
         assert!(!report.is_ok());
         assert!(report.problems.iter().any(|p| p.contains("HEAD") && p.contains("99")));
+    }
+
+    // ---- hash chain (CP13) ----
+
+    fn write_chained(store_dir: &std::path::Path, m1: &Manifest) -> Manifest {
+        crate::core::snapshot::write_manifest(store_dir, m1).unwrap();
+        let parent_hash = crate::core::snapshot::hash_manifest_file(store_dir, m1.number).unwrap();
+        let mut m2 = manifest(m1.number + 1, vec![]);
+        m2.parent_hash = Some(parent_hash);
+        crate::core::snapshot::write_manifest(store_dir, &m2).unwrap();
+        m2
+    }
+
+    #[test]
+    fn a_correct_chain_link_is_not_reported() {
+        let dir = tempdir().unwrap();
+        let store_dir = init_store(dir.path()).unwrap();
+        let m1 = manifest(1, vec![]);
+        write_chained(&store_dir, &m1);
+        crate::core::snapshot::write_head(&store_dir, 2).unwrap();
+
+        let report = check_store(&store_dir);
+
+        assert!(report.is_ok(), "{report:?}");
+    }
+
+    #[test]
+    fn tampering_with_a_past_manifest_breaks_the_chain_link() {
+        let dir = tempdir().unwrap();
+        let store_dir = init_store(dir.path()).unwrap();
+        let m1 = manifest(1, vec![]);
+        write_chained(&store_dir, &m1);
+        crate::core::snapshot::write_head(&store_dir, 2).unwrap();
+
+        // Tamper with snapshot 1 after snapshot 2's parent_hash was computed.
+        let mut tampered = m1.clone();
+        tampered.message = "tampered!".to_string();
+        crate::core::snapshot::write_manifest(&store_dir, &tampered).unwrap();
+
+        let report = check_store(&store_dir);
+
+        assert!(!report.is_ok());
+        assert!(
+            report.problems.iter().any(|p| p.contains('2') && p.to_lowercase().contains("chain")),
+            "expected a chain-broken problem naming snapshot 2, got {:?}",
+            report.problems
+        );
+    }
+
+    #[test]
+    fn a_pre_chain_manifest_with_no_parent_hash_is_not_chain_checked() {
+        let dir = tempdir().unwrap();
+        let store_dir = init_store(dir.path()).unwrap();
+        // No parent_hash at all - simulates a pre-CP13 manifest. Even though
+        // its `parent` field points at a nonexistent snapshot 0-adjacent
+        // number, that alone is not a chain error since there's no
+        // parent_hash to check.
+        let m = manifest(1, vec![]);
+        crate::core::snapshot::write_manifest(&store_dir, &m).unwrap();
+        crate::core::snapshot::write_head(&store_dir, 1).unwrap();
+
+        let report = check_store(&store_dir);
+
+        assert!(report.is_ok(), "pre-chain manifest must not be chain-checked: {report:?}");
+    }
+
+    #[test]
+    fn a_mix_of_pre_chain_and_chained_manifests_only_checks_the_chained_part() {
+        let dir = tempdir().unwrap();
+        let store_dir = init_store(dir.path()).unwrap();
+        // Snapshot 1: pre-chain (no parent_hash).
+        let m1 = manifest(1, vec![]);
+        crate::core::snapshot::write_manifest(&store_dir, &m1).unwrap();
+        // Snapshot 2: also pre-chain - simulates two old manifests in a row.
+        let m2 = manifest(2, vec![]);
+        crate::core::snapshot::write_manifest(&store_dir, &m2).unwrap();
+        // Snapshot 3: chained, anchored to snapshot 2's real on-disk bytes.
+        let parent_hash = crate::core::snapshot::hash_manifest_file(&store_dir, 2).unwrap();
+        let mut m3 = manifest(3, vec![]);
+        m3.parent_hash = Some(parent_hash);
+        crate::core::snapshot::write_manifest(&store_dir, &m3).unwrap();
+        crate::core::snapshot::write_head(&store_dir, 3).unwrap();
+
+        let report = check_store(&store_dir);
+
+        assert!(report.is_ok(), "{report:?}");
     }
 }

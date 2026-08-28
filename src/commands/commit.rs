@@ -96,11 +96,27 @@ pub(super) fn do_commit(store_dir: &Path, message: &str, allow_empty: bool) -> R
 
     let number = head + 1;
     let file_count = entries.len();
+
+    // CP13 hash chain: anchor this manifest to whatever manifest precedes it -
+    // pre-chain or already-chained, it doesn't matter which - by hashing its
+    // exact on-disk bytes (read now, before this new manifest is written,
+    // never a re-serialization). `head == 0` means there is no parent at all
+    // (this is snapshot 1 in a fresh store), so `parent_hash` stays `None`.
+    let parent_hash = if head == 0 {
+        None
+    } else {
+        Some(
+            snapshot::hash_manifest_file(store_dir, head)
+                .map_err(|e| format!("historia commit: cannot hash parent manifest (snapshot {head}): {e}"))?,
+        )
+    };
+
     let new_manifest = Manifest {
         number,
         timestamp: manifest::now_iso8601_utc(),
         message: message.to_string(),
         parent: head,
+        parent_hash,
         entries,
     };
 

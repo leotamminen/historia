@@ -51,6 +51,7 @@ mod tests {
             timestamp: timestamp.to_string(),
             message: message.to_string(),
             parent: number.saturating_sub(1),
+            parent_hash: None,
             entries: vec![],
         }
     }

@@ -15,7 +15,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::core::fsutil;
+use crate::core::{fsutil, hash};
 use crate::format::manifest::{Entry, Manifest};
 
 /// Read `.historia/HEAD`: the number of the most recent snapshot, or `0` if the
@@ -51,6 +51,18 @@ pub fn read_manifest(store_dir: &Path, number: u64) -> io::Result<Manifest> {
 pub fn write_manifest(store_dir: &Path, manifest: &Manifest) -> io::Result<()> {
     let json = serde_json::to_string_pretty(manifest).map_err(io::Error::other)?;
     fsutil::write_atomic(&manifest_path(store_dir, manifest.number), json.as_bytes())
+}
+
+/// Hash a snapshot's manifest file exactly as it is on disk (CLAUDE.md CP13's
+/// hash chain durability contract): the raw serialized JSON bytes
+/// `write_manifest` wrote, streamed via `hash::hash_file` (Rule 11) - never a
+/// re-serialization of any in-memory `Manifest` value, which could in principle
+/// drift from what's actually on disk. `commit` calls this once to compute a
+/// new manifest's `parent_hash`; `verify` calls this exact same function to
+/// recompute and check it, so the two can never disagree about what "the
+/// parent's hash" means.
+pub fn hash_manifest_file(store_dir: &Path, number: u64) -> io::Result<String> {
+    hash::hash_file(&manifest_path(store_dir, number))
 }
 
 /// The manifest at `HEAD`, or `None` if the store has no snapshots yet.
@@ -181,6 +193,7 @@ mod tests {
             timestamp: "1970-01-01T00:00:00Z".to_string(),
             message: "test".to_string(),
             parent,
+            parent_hash: None,
             entries: vec![Entry {
                 path: "a.txt".to_string(),
                 hash: "deadbeef".to_string(),
@@ -216,6 +229,35 @@ mod tests {
         write_manifest(&store_dir, &manifest).unwrap();
 
         assert_eq!(read_manifest(&store_dir, 1).unwrap(), manifest);
+    }
+
+    // ---- hash_manifest_file (CP13 hash chain) ----
+
+    #[test]
+    fn hash_manifest_file_hashes_the_exact_on_disk_bytes() {
+        let dir = tempdir().unwrap();
+        let store_dir = init_store(dir.path()).unwrap();
+        write_manifest(&store_dir, &sample_manifest(1, 0)).unwrap();
+
+        let expected = hash::hash_file(&manifest_path(&store_dir, 1)).unwrap();
+        let actual = hash_manifest_file(&store_dir, 1).unwrap();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn hash_manifest_file_changes_if_the_file_on_disk_changes() {
+        let dir = tempdir().unwrap();
+        let store_dir = init_store(dir.path()).unwrap();
+        write_manifest(&store_dir, &sample_manifest(1, 0)).unwrap();
+        let before = hash_manifest_file(&store_dir, 1).unwrap();
+
+        let mut tampered = sample_manifest(1, 0);
+        tampered.message = "tampered".to_string();
+        write_manifest(&store_dir, &tampered).unwrap();
+        let after = hash_manifest_file(&store_dir, 1).unwrap();
+
+        assert_ne!(before, after);
     }
 
     #[test]

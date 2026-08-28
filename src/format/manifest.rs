@@ -25,12 +25,28 @@ pub struct Entry {
 /// A snapshot manifest, `.historia/snapshots/<number>.json` (CLAUDE.md §9). `parent`
 /// is the previous snapshot's number, or `0` - the same "no snapshots yet" sentinel
 /// `HEAD` uses (CP1, `core::snapshot::INITIAL_HEAD`) - for the very first snapshot.
+///
+/// `parent_hash` (CP13, hash-chain / tamper-evident history) is the SHA-256 hash
+/// of the parent snapshot's manifest file, exactly as those bytes exist on disk
+/// (the serialized JSON `write_manifest` wrote, byte-for-byte - not a
+/// re-serialization of any in-memory value). It is OPTIONAL, on purpose, and the
+/// format stays `v1`: pre-CP13 manifests were written before this field existed,
+/// so it is simply absent from their JSON, and `#[serde(default)]` deserializes
+/// that absence as `None` - "pre-chain", not an error. `None` also covers a
+/// fresh store's very first snapshot, which has no parent manifest to hash at
+/// all. Both cases behave identically for `verify`'s chain check (CP13): there is
+/// nothing to validate either way. `skip_serializing_if` keeps a `None` out of
+/// newly written JSON too, so "first snapshot ever" and "predates the chain"
+/// manifests are byte-for-byte indistinguishable in their absence of the field -
+/// exactly the shape a real pre-CP13 manifest already has.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
     pub number: u64,
     pub timestamp: String,
     pub message: String,
     pub parent: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_hash: Option<String>,
     pub entries: Vec<Entry>,
 }
 
@@ -112,6 +128,7 @@ mod tests {
             timestamp: "1970-01-02T01:01:01Z".to_string(),
             message: "fix bug".to_string(),
             parent: 2,
+            parent_hash: Some("deadbeef".to_string()),
             entries: vec![Entry {
                 path: "src/main.rs".to_string(),
                 hash: "abc123".to_string(),
@@ -124,12 +141,51 @@ mod tests {
         assert_eq!(json["timestamp"], "1970-01-02T01:01:01Z");
         assert_eq!(json["message"], "fix bug");
         assert_eq!(json["parent"], 2);
+        assert_eq!(json["parent_hash"], "deadbeef");
         assert_eq!(json["entries"][0]["path"], "src/main.rs");
         assert_eq!(json["entries"][0]["hash"], "abc123");
         assert_eq!(json["entries"][0]["mode"], 0o644);
 
         let round_tripped: Manifest = serde_json::from_value(json).unwrap();
         assert_eq!(round_tripped, manifest);
+    }
+
+    // ---- parent_hash (CP13 hash chain) ----
+
+    #[test]
+    fn a_none_parent_hash_is_omitted_from_the_json_entirely() {
+        let manifest = Manifest {
+            number: 1,
+            timestamp: "1970-01-01T00:00:00Z".to_string(),
+            message: "first".to_string(),
+            parent: 0,
+            parent_hash: None,
+            entries: vec![],
+        };
+
+        let json = serde_json::to_value(&manifest).unwrap();
+
+        assert!(
+            json.as_object().unwrap().get("parent_hash").is_none(),
+            "expected no parent_hash key at all, got {json}"
+        );
+    }
+
+    #[test]
+    fn a_pre_chain_manifest_with_no_parent_hash_key_deserializes_to_none() {
+        // Simulates a manifest written before CP13 existed: no such field at
+        // all in its JSON, not even a null.
+        let pre_chain_json = r#"{
+            "number": 1,
+            "timestamp": "1970-01-01T00:00:00Z",
+            "message": "old snapshot",
+            "parent": 0,
+            "entries": []
+        }"#;
+
+        let manifest: Manifest = serde_json::from_str(pre_chain_json).unwrap();
+
+        assert_eq!(manifest.parent_hash, None);
     }
 
     // ---- ISO 8601 UTC timestamp ----

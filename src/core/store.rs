@@ -729,6 +729,7 @@ mod tests {
             timestamp: "1970-01-01T00:00:00Z".to_string(),
             message: "test".to_string(),
             parent: number.saturating_sub(1),
+            parent_hash: None,
             entries,
         }
     }
