@@ -377,7 +377,7 @@ author commits and pushes (Rule 1).
   (`include_str!`). Optional figlet-style banner. Never touches the network.
   *Done when:* runs identically with networking disabled.
 
-- [ ] **CP13 — Hash chain (tamper-evident history).** Each manifest records the parent
+- [x] **CP13 — Hash chain (tamper-evident history).** Each manifest records the parent
   manifest's hash; `verify` walks and validates the chain.
   *Done when:* altering any past manifest makes `verify` fail at the right point.
 
