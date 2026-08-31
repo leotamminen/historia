@@ -39,6 +39,15 @@ ignore = "0.4"
 # unsafe code (Rule 9's minimalism cuts both ways: prefer a tiny, focused,
 # already-audited crate here over hand-written unsafe syscall bindings).
 hostname = "0.4"
+# ed25519-dalek: snapshot signing (CLAUDE.md §7, CP14) - the crate earmarked
+# for exactly this. Pinned to the 2.x line, the current stable series. The
+# "rand_core" feature enables `SigningKey::generate`, which needs a CSPRNG;
+# rand_core (below) supplies one (`OsRng`) without pulling in the much larger
+# `rand` crate and its algorithms/distributions - just a thin wrapper around
+# the OS's local secure random source (Rule 9: minimal, and still fully
+# offline - Rule 2, no network involved in reading local OS entropy).
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
 
 [dev-dependencies]
 # assert_cmd/predicates: drive the compiled binary as a subprocess and assert on its

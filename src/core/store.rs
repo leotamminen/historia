@@ -287,7 +287,19 @@ fn copy_store_tree(source_store_dir: &Path, staging_dir: &Path) -> io::Result<Ba
     fs::create_dir_all(staging_dir)?;
     stream_copy_file(&source_store_dir.join("format"), &staging_dir.join("format"))?;
     stream_copy_file(&source_store_dir.join("HEAD"), &staging_dir.join("HEAD"))?;
-    let snapshots_copied = copy_dir_flat(&source_store_dir.join("snapshots"), &staging_dir.join("snapshots"))?;
+
+    // Signing key (CP14): optional - a store may not have one yet (no commit
+    // has ever signed anything). Copy both files if present, so the backup can
+    // keep signing new commits under the same identity; never invent a key
+    // that isn't there (that would be `ensure_key`'s job, and only on demand).
+    for key_file_name in [crate::core::signing::PRIVATE_KEY_FILE_NAME, crate::core::signing::PUBLIC_KEY_FILE_NAME] {
+        let source = source_store_dir.join(key_file_name);
+        if source.is_file() {
+            stream_copy_file(&source, &staging_dir.join(key_file_name))?;
+        }
+    }
+
+    let snapshots_copied = copy_snapshots_dir(&source_store_dir.join("snapshots"), &staging_dir.join("snapshots"))?;
     let objects_copied = copy_objects(source_store_dir, staging_dir)?;
     Ok(BackupStats { objects_copied, snapshots_copied })
 }
@@ -309,20 +321,26 @@ fn copy_objects(source_store_dir: &Path, staging_dir: &Path) -> io::Result<usize
     Ok(blobs.len())
 }
 
-/// Copy every file directly under `source_dir` into `dest_dir` (used for
-/// `snapshots/`, which is a flat directory of `<n>.json` manifests - no further
-/// nesting to preserve).
-fn copy_dir_flat(source_dir: &Path, dest_dir: &Path) -> io::Result<usize> {
+/// Copy every file directly under `source_dir` (`snapshots/`: `<n>.json`
+/// manifests and, since CP14, their `<n>.json.sig` signature sidecars) into
+/// `dest_dir`. Returns the number of actual SNAPSHOTS copied (`.json` files
+/// only) - not the total file count, so a signed store doesn't report double
+/// its real snapshot count just because each one now has a sidecar file too.
+fn copy_snapshots_dir(source_dir: &Path, dest_dir: &Path) -> io::Result<usize> {
     fs::create_dir_all(dest_dir)?;
-    let mut count = 0;
+    let mut manifests_copied = 0;
     for entry in fs::read_dir(source_dir)? {
         let entry = entry?;
-        if entry.file_type()?.is_file() {
-            stream_copy_file(&entry.path(), &dest_dir.join(entry.file_name()))?;
-            count += 1;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let name = entry.file_name();
+        stream_copy_file(&entry.path(), &dest_dir.join(&name))?;
+        if name.to_string_lossy().ends_with(".json") {
+            manifests_copied += 1;
         }
     }
-    Ok(count)
+    Ok(manifests_copied)
 }
 
 /// Stream `source`'s bytes to a freshly created `dest` (Rule 11 - `io::copy`
@@ -861,6 +879,28 @@ mod tests {
 
         let copied = fs::read(blob_path(&dest_dir.path().join(STORE_DIR_NAME), &hash)).unwrap();
         assert_eq!(copied, content);
+    }
+
+    #[test]
+    fn backup_store_copies_the_signing_key_and_signature_sidecars_without_double_counting_snapshots() {
+        let source_dir = tempdir().unwrap();
+        let source_store = init_store(source_dir.path()).unwrap();
+        let key = crate::core::signing::ensure_key(&source_store).unwrap();
+        let m = sample_manifest(1, vec![]);
+        crate::core::snapshot::write_manifest(&source_store, &m).unwrap();
+        let bytes = fs::read(crate::core::snapshot::manifest_path(&source_store, 1)).unwrap();
+        let sig = crate::core::signing::sign(&key, &bytes);
+        crate::core::signing::write_signature(&source_store, 1, &sig).unwrap();
+        crate::core::snapshot::write_head(&source_store, 1).unwrap();
+
+        let dest_dir = tempdir().unwrap();
+        let stats = backup_store(&source_store, dest_dir.path(), false).unwrap();
+
+        assert_eq!(stats.snapshots_copied, 1, "the .sig sidecar must not be double-counted as a snapshot");
+        let dest_store = dest_dir.path().join(STORE_DIR_NAME);
+        assert!(dest_store.join(crate::core::signing::PRIVATE_KEY_FILE_NAME).is_file());
+        assert!(dest_store.join(crate::core::signing::PUBLIC_KEY_FILE_NAME).is_file());
+        assert!(crate::core::signing::signature_path(&dest_store, 1).is_file());
     }
 
     // ---- lock ----

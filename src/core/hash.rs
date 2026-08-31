@@ -72,7 +72,9 @@ pub fn hash_file(path: &Path) -> io::Result<String> {
     hash_reader(&mut File::open(path)?)
 }
 
-fn hex_encode(bytes: &[u8]) -> String {
+/// Encode `bytes` as lowercase hex. `pub(crate)` so `core::signing` (CP14) can
+/// reuse it for key/signature encoding rather than a second copy of this.
+pub(crate) fn hex_encode(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
     for b in bytes {
         write!(&mut s, "{b:02x}").expect("writing to a String never fails");

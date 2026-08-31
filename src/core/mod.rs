@@ -6,6 +6,7 @@
 pub mod fsutil;
 pub mod hash;
 pub mod ignore;
+pub mod signing;
 pub mod snapshot;
 pub mod store;
 pub mod walk;

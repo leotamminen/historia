@@ -4,7 +4,7 @@ use std::env;
 use std::path::Path;
 
 use crate::core::store::lock;
-use crate::core::{snapshot, store, walk};
+use crate::core::{signing, snapshot, store, walk};
 use crate::format::manifest::{self, Entry, Manifest};
 
 /// Parsed `commit` arguments: `-m`/`--message <MSG>` and `--allow-empty` (§5).
@@ -120,8 +120,28 @@ pub(super) fn do_commit(store_dir: &Path, message: &str, allow_empty: bool) -> R
         entries,
     };
 
-    // Rule 5's fixed write order: blobs (already written above) -> manifest -> HEAD.
+    // Rule 5's fixed write order, extended by CP14: blobs (already written
+    // above) -> manifest -> signature -> HEAD. The signature must exist before
+    // HEAD can point to this snapshot, same reasoning as the manifest itself -
+    // by the time any command observes HEAD == number, everything that
+    // snapshot claims to have (blobs, manifest, and now its signature) is
+    // already durably on disk.
     snapshot::write_manifest(store_dir, &new_manifest).map_err(|e| format!("historia commit: {e}"))?;
+
+    // Sign the manifest's exact on-disk bytes - the same bytes CP13's chain
+    // hashes, read fresh from disk rather than re-serialized (CLAUDE.md CP14).
+    // Auto-generates a key on this store's very first signed commit (the
+    // common, no-prompt case); if a key existed before and is now only
+    // partially present, this fails the whole commit rather than silently
+    // minting a new identity (blobs/manifest already on disk are harmless
+    // orphans until a future commit succeeds - Rule 5's "worst case" spirit).
+    let manifest_bytes = std::fs::read(snapshot::manifest_path(store_dir, number))
+        .map_err(|e| format!("historia commit: cannot read manifest just written: {e}"))?;
+    let signing_key = signing::ensure_key(store_dir).map_err(|e| format!("historia commit: {e}"))?;
+    let signature = signing::sign(&signing_key, &manifest_bytes);
+    signing::write_signature(store_dir, number, &signature)
+        .map_err(|e| format!("historia commit: failed to write signature: {e}"))?;
+
     snapshot::write_head(store_dir, number).map_err(|e| format!("historia commit: {e}"))?;
 
     println!("snapshot {number}: {file_count} file(s) - {message}");

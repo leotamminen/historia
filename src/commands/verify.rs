@@ -6,7 +6,7 @@ use std::env;
 use std::fs;
 use std::path::Path;
 
-use crate::core::{hash, snapshot, store};
+use crate::core::{hash, signing, snapshot, store};
 use crate::format::manifest::FORMAT_MARKER;
 
 /// The result of checking a store: counts, and a list of every problem found
@@ -181,6 +181,57 @@ fn check_manifests(store_dir: &Path, numbers: &[u64], present_hashes: &HashSet<S
                 )),
             }
         }
+
+        check_signature(store_dir, number, report);
+    }
+}
+
+/// If snapshot `number` has a signature sidecar file (CLAUDE.md CP14), verify
+/// it against the manifest's exact on-disk bytes using the store's current
+/// public key. No sidecar file at all means "unsigned" (pre-CP14, or created
+/// before any key existed) - not an error, simply not checked. A sidecar file
+/// present with no usable public key to check it against IS reported: a claimed
+/// signature nobody can confirm is a real integrity concern, not silently
+/// ignorable the way "never signed at all" is.
+fn check_signature(store_dir: &Path, number: u64, report: &mut Report) {
+    let sig_path = signing::signature_path(store_dir, number);
+    if !sig_path.is_file() {
+        return;
+    }
+
+    let signature = match signing::read_signature(store_dir, number) {
+        Ok(sig) => sig,
+        Err(e) => {
+            report.problems.push(format!("snapshot {number}: cannot read signature file: {e}"));
+            return;
+        }
+    };
+
+    let verifying_key = match signing::load_verifying_key(store_dir) {
+        Ok(key) => key,
+        Err(e) => {
+            report
+                .problems
+                .push(format!("snapshot {number}: cannot verify signature - no usable public key: {e}"));
+            return;
+        }
+    };
+
+    let manifest_bytes = match fs::read(snapshot::manifest_path(store_dir, number)) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            report
+                .problems
+                .push(format!("snapshot {number}: cannot verify signature - cannot read manifest: {e}"));
+            return;
+        }
+    };
+
+    if !signing::verify_signature(&verifying_key, &manifest_bytes, &signature) {
+        report.problems.push(format!(
+            "snapshot {number}: signature invalid - the manifest does not match its recorded \
+             signature (tampered, or signed by a different key)"
+        ));
     }
 }
 
@@ -394,5 +445,100 @@ mod tests {
         let report = check_store(&store_dir);
 
         assert!(report.is_ok(), "{report:?}");
+    }
+
+    // ---- signatures (CP14) ----
+
+    fn write_signed(store_dir: &std::path::Path, number: u64) {
+        let m = manifest(number, vec![]);
+        crate::core::snapshot::write_manifest(store_dir, &m).unwrap();
+        let key = signing::ensure_key(store_dir).unwrap();
+        let bytes = fs::read(crate::core::snapshot::manifest_path(store_dir, number)).unwrap();
+        let sig = signing::sign(&key, &bytes);
+        signing::write_signature(store_dir, number, &sig).unwrap();
+    }
+
+    #[test]
+    fn a_correctly_signed_snapshot_is_not_reported() {
+        let dir = tempdir().unwrap();
+        let store_dir = init_store(dir.path()).unwrap();
+        write_signed(&store_dir, 1);
+        crate::core::snapshot::write_head(&store_dir, 1).unwrap();
+
+        let report = check_store(&store_dir);
+
+        assert!(report.is_ok(), "{report:?}");
+    }
+
+    #[test]
+    fn tampering_with_a_signed_manifest_is_reported_as_an_invalid_signature() {
+        let dir = tempdir().unwrap();
+        let store_dir = init_store(dir.path()).unwrap();
+        write_signed(&store_dir, 1);
+        crate::core::snapshot::write_head(&store_dir, 1).unwrap();
+
+        let mut tampered = manifest(1, vec![]);
+        tampered.message = "tampered!".to_string();
+        crate::core::snapshot::write_manifest(&store_dir, &tampered).unwrap();
+
+        let report = check_store(&store_dir);
+
+        assert!(!report.is_ok());
+        assert!(
+            report.problems.iter().any(|p| p.contains('1') && p.contains("signature invalid")),
+            "expected an invalid-signature problem naming snapshot 1, got {:?}",
+            report.problems
+        );
+        assert!(
+            !report.problems.iter().any(|p| p.to_lowercase().contains("chain")),
+            "an invalid-signature problem must read distinctly from a chain-broken one, got {:?}",
+            report.problems
+        );
+    }
+
+    #[test]
+    fn an_unsigned_snapshot_is_not_signature_checked() {
+        let dir = tempdir().unwrap();
+        let store_dir = init_store(dir.path()).unwrap();
+        // No key, no .sig file at all - simulates a pre-CP14 snapshot.
+        let m = manifest(1, vec![]);
+        crate::core::snapshot::write_manifest(&store_dir, &m).unwrap();
+        crate::core::snapshot::write_head(&store_dir, 1).unwrap();
+
+        let report = check_store(&store_dir);
+
+        assert!(report.is_ok(), "{report:?}");
+    }
+
+    #[test]
+    fn a_mix_of_unsigned_and_signed_snapshots_only_checks_the_signed_ones() {
+        let dir = tempdir().unwrap();
+        let store_dir = init_store(dir.path()).unwrap();
+        // Snapshot 1: unsigned (no .sig file).
+        let m1 = manifest(1, vec![]);
+        crate::core::snapshot::write_manifest(&store_dir, &m1).unwrap();
+        // Snapshot 2: signed.
+        write_signed(&store_dir, 2);
+        crate::core::snapshot::write_head(&store_dir, 2).unwrap();
+
+        let report = check_store(&store_dir);
+
+        assert!(report.is_ok(), "{report:?}");
+    }
+
+    #[test]
+    fn a_signature_with_no_public_key_available_is_reported() {
+        let dir = tempdir().unwrap();
+        let store_dir = init_store(dir.path()).unwrap();
+        write_signed(&store_dir, 1);
+        crate::core::snapshot::write_head(&store_dir, 1).unwrap();
+
+        // Simulate the public key having been lost.
+        fs::remove_file(store_dir.join(signing::PUBLIC_KEY_FILE_NAME)).unwrap();
+
+        let report = check_store(&store_dir);
+
+        assert!(!report.is_ok());
+        assert!(report.problems.iter().any(|p| p.contains('1') && p.contains("no usable public key")));
     }
 }

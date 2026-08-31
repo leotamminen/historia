@@ -93,6 +93,14 @@ pub const COMMANDS: &[CommandSpec] = &[
         usage_detail: "",
         run: commands::motd::run,
     },
+    CommandSpec {
+        name: "keygen",
+        aliases: &[],
+        about: "(Re)generate the store's Ed25519 signing key",
+        usage: "historia keygen [--force]",
+        usage_detail: "  --force   Overwrite an existing signing key (new commits sign under the\n            new identity; already-signed snapshots can no longer be confirmed)",
+        run: commands::keygen::run,
+    },
 ];
 
 /// Find a registered command by its canonical name or an alias.

@@ -5,6 +5,7 @@
 pub mod backup;
 pub mod commit;
 pub mod init;
+pub mod keygen;
 pub mod log;
 pub mod motd;
 pub mod restore;

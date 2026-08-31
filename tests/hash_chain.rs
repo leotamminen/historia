@@ -113,6 +113,10 @@ fn pre_chain_manifests_mixed_with_chained_ones_still_verify_ok() {
     let mut m2: Value = serde_json::from_str(&fs::read_to_string(&m2_path).unwrap()).unwrap();
     m2.as_object_mut().unwrap().remove("parent_hash");
     fs::write(&m2_path, serde_json::to_string_pretty(&m2).unwrap()).unwrap();
+    // Editing the manifest bytes also invalidates its CP14 signature (correctly
+    // so - the bytes really did change) - remove the now-stale sidecar too, so
+    // this fully simulates a pre-CP13-*and*-pre-CP14 manifest, not "tampered".
+    fs::remove_file(dir.path().join(".historia").join("snapshots").join("2.json.sig")).unwrap();
 
     // A later, newly chained snapshot anchors to snapshot 2's now-current bytes.
     fs::write(dir.path().join("a.txt"), b"3").unwrap();
