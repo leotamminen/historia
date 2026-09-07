@@ -381,7 +381,7 @@ author commits and pushes (Rule 1).
   manifest's hash; `verify` walks and validates the chain.
   *Done when:* altering any past manifest makes `verify` fail at the right point.
 
-- [ ] **CP14 — Signing (Ed25519).** Sign snapshots; `verify` checks signatures. Local keys.
+- [x] **CP14 — Signing (Ed25519).** Sign snapshots; `verify` checks signatures. Local keys.
   (Key storage/protection/loss is its own small design discussion — decide when CP14 nears.)
   *Done when:* a tampered or unsigned snapshot is flagged.
 
