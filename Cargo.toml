@@ -48,6 +48,12 @@ hostname = "0.4"
 # offline - Rule 2, no network involved in reading local OS entropy).
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
+# age: whole-store encrypted backups (CLAUDE.md §7, CP15) - the crate earmarked
+# for exactly this. Pinned to the 0.10 line, the current stable series. Only
+# the default (native X25519 identity) feature is enabled - no passphrase/PGP
+# plugin support, which this checkpoint's locked design (a plain identity/
+# recipient keypair file, CP14-style) never needs.
+age = "0.10"
 
 [dev-dependencies]
 # assert_cmd/predicates: drive the compiled binary as a subprocess and assert on its

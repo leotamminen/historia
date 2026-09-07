@@ -282,65 +282,20 @@ pub fn backup_store(source_store_dir: &Path, dest_root: &Path, force: bool) -> R
     Ok(stats)
 }
 
-/// Copy `source_store_dir`'s whole contents into a fresh `staging_dir`.
+/// Copy `source_store_dir`'s whole contents into a fresh `staging_dir`, via
+/// [`for_each_component`] - the same "what does a store consist of" walk
+/// CP15's encrypted-archive packer (`core::archive`) also uses, so plain and
+/// encrypted backups can never silently disagree about what gets backed up.
 fn copy_store_tree(source_store_dir: &Path, staging_dir: &Path) -> io::Result<BackupStats> {
     fs::create_dir_all(staging_dir)?;
-    stream_copy_file(&source_store_dir.join("format"), &staging_dir.join("format"))?;
-    stream_copy_file(&source_store_dir.join("HEAD"), &staging_dir.join("HEAD"))?;
-
-    // Signing key (CP14): optional - a store may not have one yet (no commit
-    // has ever signed anything). Copy both files if present, so the backup can
-    // keep signing new commits under the same identity; never invent a key
-    // that isn't there (that would be `ensure_key`'s job, and only on demand).
-    for key_file_name in [crate::core::signing::PRIVATE_KEY_FILE_NAME, crate::core::signing::PUBLIC_KEY_FILE_NAME] {
-        let source = source_store_dir.join(key_file_name);
-        if source.is_file() {
-            stream_copy_file(&source, &staging_dir.join(key_file_name))?;
-        }
-    }
-
-    let snapshots_copied = copy_snapshots_dir(&source_store_dir.join("snapshots"), &staging_dir.join("snapshots"))?;
-    let objects_copied = copy_objects(source_store_dir, staging_dir)?;
-    Ok(BackupStats { objects_copied, snapshots_copied })
-}
-
-/// Copy every blob from `source_store_dir` into `staging_dir/objects/`,
-/// preserving the hash-prefix sharding (CLAUDE.md §9). Reuses [`list_blobs`] -
-/// the same "what's actually stored" discovery `verify` (CP8) uses - rather
-/// than a second way of walking `objects/`.
-fn copy_objects(source_store_dir: &Path, staging_dir: &Path) -> io::Result<usize> {
-    fs::create_dir_all(staging_dir.join("objects"))?;
-    let blobs = list_blobs(source_store_dir)?;
-    for (hash, source_path) in &blobs {
-        let dest_path = blob_path(staging_dir, hash);
+    let counts = for_each_component(source_store_dir, |relative_path, absolute_path| {
+        let dest_path = staging_dir.join(relative_path);
         if let Some(parent) = dest_path.parent() {
             fs::create_dir_all(parent)?;
         }
-        stream_copy_file(source_path, &dest_path)?;
-    }
-    Ok(blobs.len())
-}
-
-/// Copy every file directly under `source_dir` (`snapshots/`: `<n>.json`
-/// manifests and, since CP14, their `<n>.json.sig` signature sidecars) into
-/// `dest_dir`. Returns the number of actual SNAPSHOTS copied (`.json` files
-/// only) - not the total file count, so a signed store doesn't report double
-/// its real snapshot count just because each one now has a sidecar file too.
-fn copy_snapshots_dir(source_dir: &Path, dest_dir: &Path) -> io::Result<usize> {
-    fs::create_dir_all(dest_dir)?;
-    let mut manifests_copied = 0;
-    for entry in fs::read_dir(source_dir)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_file() {
-            continue;
-        }
-        let name = entry.file_name();
-        stream_copy_file(&entry.path(), &dest_dir.join(&name))?;
-        if name.to_string_lossy().ends_with(".json") {
-            manifests_copied += 1;
-        }
-    }
-    Ok(manifests_copied)
+        stream_copy_file(absolute_path, &dest_path)
+    })?;
+    Ok(BackupStats { objects_copied: counts.objects, snapshots_copied: counts.snapshots })
 }
 
 /// Stream `source`'s bytes to a freshly created `dest` (Rule 11 - `io::copy`
@@ -353,6 +308,76 @@ fn stream_copy_file(source: &Path, dest: &Path) -> io::Result<()> {
     let mut dest_file = fs::File::create(dest)?;
     io::copy(&mut source_file, &mut dest_file)?;
     dest_file.sync_all()
+}
+
+// ---- store components (CP11 backup, CP15 encrypted backup) ----
+
+/// Counts of durable components discovered while walking a store via
+/// [`for_each_component`]: blobs under `objects/`, and snapshot manifests
+/// under `snapshots/` (each snapshot's optional CP14 `.sig` sidecar is walked
+/// too, but only its `.json` manifest is counted - counting the sidecar
+/// separately would double a signed store's apparent snapshot count).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct StoreComponentCounts {
+    pub objects: usize,
+    pub snapshots: usize,
+}
+
+/// Walk every durable component of the store at `store_dir` - `format`,
+/// `HEAD`, the CP14 signing key files and CP15 age key files if present, every
+/// snapshot manifest and its `.sig` sidecar if present, and every blob under
+/// `objects/` - calling `visit(relative_path, absolute_path)` once per file.
+/// `relative_path` is forward-slash normalized, relative to `store_dir`
+/// (portable the same way manifest entry paths are - CLAUDE.md §9).
+///
+/// Deliberately excludes `lock`: it is a runtime artifact belonging to
+/// whichever process currently holds it, never part of the durable contract a
+/// backup or archive should reproduce (Rule 6).
+///
+/// The single shared definition of "what a store consists of" - CP11's plain
+/// directory backup and CP15's encrypted single-file backup both walk via
+/// this one function, so neither can silently drift from what the other
+/// considers part of the store.
+pub fn for_each_component(
+    store_dir: &Path,
+    mut visit: impl FnMut(&str, &Path) -> io::Result<()>,
+) -> io::Result<StoreComponentCounts> {
+    let mut counts = StoreComponentCounts::default();
+
+    visit("format", &store_dir.join("format"))?;
+    visit("HEAD", &store_dir.join("HEAD"))?;
+
+    for key_file_name in [
+        crate::core::signing::PRIVATE_KEY_FILE_NAME,
+        crate::core::signing::PUBLIC_KEY_FILE_NAME,
+        crate::core::encryption::IDENTITY_FILE_NAME,
+        crate::core::encryption::RECIPIENT_FILE_NAME,
+    ] {
+        let path = store_dir.join(key_file_name);
+        if path.is_file() {
+            visit(key_file_name, &path)?;
+        }
+    }
+
+    for entry in fs::read_dir(store_dir.join("snapshots"))? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        visit(&format!("snapshots/{name}"), &entry.path())?;
+        if name.ends_with(".json") {
+            counts.snapshots += 1;
+        }
+    }
+
+    for (hash, path) in list_blobs(store_dir)? {
+        visit(&format!("objects/{}/{}", &hash[..2], &hash[2..]), &path)?;
+        counts.objects += 1;
+    }
+
+    Ok(counts)
 }
 
 // ---- store discovery ----
@@ -769,6 +794,71 @@ mod tests {
                 out.insert(rel, fs::read(&path).unwrap());
             }
         }
+    }
+
+    // ---- for_each_component (shared by CP11 backup and CP15 encrypted backup) ----
+
+    #[test]
+    fn for_each_component_visits_format_head_snapshots_and_objects() {
+        let dir = tempdir().unwrap();
+        let store_dir = init_store(dir.path()).unwrap();
+        let hash = write_blob(&store_dir, &mut &b"content"[..]).unwrap();
+        let m = sample_manifest(1, vec![Entry { path: "a.txt".into(), hash: hash.clone(), mode: 0o644 }]);
+        crate::core::snapshot::write_manifest(&store_dir, &m).unwrap();
+        crate::core::snapshot::write_head(&store_dir, 1).unwrap();
+
+        let mut visited = Vec::new();
+        let counts = for_each_component(&store_dir, |rel, abs| {
+            assert!(abs.is_file(), "abs path should exist: {abs:?}");
+            visited.push(rel.to_string());
+            Ok(())
+        })
+        .unwrap();
+
+        assert!(visited.contains(&"format".to_string()));
+        assert!(visited.contains(&"HEAD".to_string()));
+        assert!(visited.contains(&"snapshots/1.json".to_string()));
+        assert!(
+            visited.iter().any(|p| p.starts_with("objects/") && p.ends_with(&hash[2..])),
+            "expected an objects/ entry for {hash}, got {visited:?}"
+        );
+        assert_eq!(counts.objects, 1);
+        assert_eq!(counts.snapshots, 1);
+    }
+
+    #[test]
+    fn for_each_component_never_visits_lock() {
+        let dir = tempdir().unwrap();
+        let store_dir = init_store(dir.path()).unwrap();
+        fs::write(store_dir.join(lock::LOCK_FILE_NAME), b"1\n12345\n").unwrap();
+
+        let mut visited = Vec::new();
+        for_each_component(&store_dir, |rel, _abs| {
+            visited.push(rel.to_string());
+            Ok(())
+        })
+        .unwrap();
+
+        assert!(!visited.contains(&"lock".to_string()), "lock must never be treated as a durable component");
+    }
+
+    #[test]
+    fn for_each_component_includes_present_key_files_but_not_absent_ones() {
+        let dir = tempdir().unwrap();
+        let store_dir = init_store(dir.path()).unwrap();
+        crate::core::signing::ensure_key(&store_dir).unwrap();
+
+        let mut visited = Vec::new();
+        for_each_component(&store_dir, |rel, _abs| {
+            visited.push(rel.to_string());
+            Ok(())
+        })
+        .unwrap();
+
+        assert!(visited.contains(&"signing_key".to_string()));
+        assert!(visited.contains(&"signing_key.pub".to_string()));
+        assert!(!visited.contains(&"age_key".to_string()), "no age key was ever created in this store");
+        assert!(!visited.contains(&"age_key.pub".to_string()));
     }
 
     #[test]

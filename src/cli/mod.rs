@@ -80,9 +80,9 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "backup",
         aliases: &[],
-        about: "Copy the whole store to another local path",
-        usage: "historia backup <path> [--force]",
-        usage_detail: "  <path>    Destination folder (created if missing); the store lands at\n            <path>/.historia, so <path> becomes a normal tracked-folder root\n  --force   Overwrite a store that already exists at the destination",
+        about: "Copy the whole store to another local path, plain or encrypted",
+        usage: "historia backup <path> [--encrypt] [--force]  |  historia backup --decrypt <file> <destination> [--force]",
+        usage_detail: "  <path>          Destination folder (created if missing); the store lands at\n                  <path>/.historia, so <path> becomes a normal tracked-folder root\n  --encrypt       Write a single encrypted file to <path> instead of a folder\n                  (auto-generates an age key on this store's first use; see\n                  'historia help keygen'). <path> is a FILE, not a folder.\n  --decrypt <file> <destination>\n                  Decrypt <file> (made with --encrypt) using THIS store's own\n                  age key, restoring a normal store to <destination>/.historia\n  --force         Overwrite an existing destination (folder's store, or file)",
         run: commands::backup::run,
     },
     CommandSpec {
@@ -96,9 +96,9 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "keygen",
         aliases: &[],
-        about: "(Re)generate the store's Ed25519 signing key",
-        usage: "historia keygen [--force]",
-        usage_detail: "  --force   Overwrite an existing signing key (new commits sign under the\n            new identity; already-signed snapshots can no longer be confirmed)",
+        about: "(Re)generate the store's signing or encryption key",
+        usage: "historia keygen [--signing | --encryption] [--force]",
+        usage_detail: "  --signing     Target the Ed25519 signing key used by `commit` (default)\n  --encryption  Target the age encryption key used by `backup --encrypt`\n  --force       Overwrite an existing key of the chosen kind. For --signing,\n                already-signed snapshots can no longer be confirmed under the\n                old identity. For --encryption, backups already encrypted\n                under the old identity become PERMANENTLY undecryptable.",
         run: commands::keygen::run,
     },
 ];

@@ -5,6 +5,8 @@
 
 pub mod fsutil;
 pub mod hash;
+pub mod archive;
+pub mod encryption;
 pub mod ignore;
 pub mod signing;
 pub mod snapshot;
